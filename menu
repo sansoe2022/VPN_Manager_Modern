@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Readable menu launcher; the complete menu source is vpnmanager/manager.py.
+set -euo pipefail
+exec python3 "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/vpnmanager/manager.py" menu

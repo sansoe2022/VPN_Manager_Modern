@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+*.pem
+*.key
+*.ovpn
+*.tar.gz

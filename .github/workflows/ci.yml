@@ -1,0 +1,19 @@
+name: Compatibility checks
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  distro:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: ['ubuntu:22.04', 'ubuntu:24.04', 'debian:12', 'debian:13']
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check shell syntax
+        run: bash -n install.sh Plus
+      - name: Build and run distro integration checks
+        run: |
+          docker build --build-arg DISTRO=${{ matrix.distro }} -f tests/Dockerfile -t vpnmanager-test .
+          docker run --rm vpnmanager-test
