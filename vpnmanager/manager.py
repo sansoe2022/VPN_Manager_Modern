@@ -478,14 +478,15 @@ def diagnostics(config):
 
 
 def choose(title, options):
-    print('\n' + title)
-    for key, label, _ in options:
-        print(f'  {key}. {label}')
-    selected = input('Select an option: ').strip().lstrip('0') or '0'
-    for key, _, action in options:
-        if selected == key:
-            return action
-    raise ValueError('Invalid option.')
+    while True:
+        print('\n' + title)
+        for key, label, _ in options:
+            print(f'  {key}. {label}')
+        selected = input('Select an option: ').strip().lstrip('0') or '0'
+        for key, _, action in options:
+            if selected == key:
+                return action
+        print('Invalid option. Choose one of the listed numbers.')
 
 
 def connections():
