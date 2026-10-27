@@ -62,12 +62,12 @@ sshd-auth: unknown [net]
     def test_openvpn_distribution_versions(self):
         for banner, expected in [('OpenVPN 2.4.7 x86_64-linux-gnu', (2, 4)),
                                  ('OpenVPN 2.6.14 x86_64-pc-linux-gnu', (2, 6))]:
-            with patch.object(manager, 'capture', return_value=banner):
+            with patch.object(manager.subprocess, 'run', return_value=SimpleNamespace(stdout=banner, returncode=1 if expected == (2, 4) else 0)):
                 self.assertEqual(manager.openvpn_version(), expected)
         self.assertEqual(manager.openvpn_ciphers((2, 4)), 'ncp-ciphers AES-256-GCM:AES-128-GCM')
         self.assertTrue(manager.openvpn_ciphers((2, 5)).startswith('data-ciphers '))
         for banner in ('OpenVPN 2.3.18', 'unexpected output'):
-            with patch.object(manager, 'capture', return_value=banner):
+            with patch.object(manager.subprocess, 'run', return_value=SimpleNamespace(stdout=banner, returncode=1)):
                 with self.assertRaises(ValueError):
                     manager.openvpn_version()
 

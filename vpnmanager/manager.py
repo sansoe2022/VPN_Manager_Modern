@@ -336,8 +336,10 @@ connect = 127.0.0.1:{config['tunnel_port']}
 
 
 def openvpn_version():
-    match = re.search(r'^OpenVPN (\d+)\.(\d+)', capture('openvpn', '--version'))
-    if not match:
+    # OpenVPN 2.4 prints a valid version banner but exits with status 1.
+    result = subprocess.run(['openvpn', '--version'], capture_output=True, text=True, check=False)
+    match = re.search(r'^OpenVPN (\d+)\.(\d+)', result.stdout)
+    if result.returncode not in (0, 1) or not match:
         raise ValueError('Cannot determine the installed OpenVPN version.')
     version = tuple(map(int, match.groups()))
     if version < (2, 4):
