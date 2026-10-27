@@ -11,9 +11,10 @@ bootstrap_source=${BASH_SOURCE[0]:-}
 if [[ -n "$bootstrap_source" ]]; then
   bootstrap_root=$(cd -- "$(dirname -- "$bootstrap_source")" && pwd)
 else
-  bootstrap_root=$PWD
+  # A streamed public installer must fetch current source, not reuse an old CWD.
+  bootstrap_root=''
 fi
-if [[ -f "$bootstrap_root/install.sh" && -f "$bootstrap_root/vpnmanager/manager.py" ]]; then
+if [[ -n "$bootstrap_root" && -f "$bootstrap_root/install.sh" && -f "$bootstrap_root/vpnmanager/manager.py" ]]; then
   exec bash "$bootstrap_root/install.sh" "$@"
 fi
 export DEBIAN_FRONTEND=noninteractive

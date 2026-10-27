@@ -18,6 +18,8 @@ import accounts
 import private_backup
 import online
 
+subprocess.run(['python3', '/src/tests/bootstrap_smoke.py'], check=True)
+
 real_run = manager.run
 
 
