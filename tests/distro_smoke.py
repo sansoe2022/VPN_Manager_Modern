@@ -3,6 +3,7 @@ import getpass
 import os
 from pathlib import Path
 import socket
+import ssl
 import shutil
 import subprocess
 import sys
@@ -12,6 +13,9 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'vpnmanager'))
 import manager
+import extras
+import accounts
+import private_backup
 import online
 
 real_run = manager.run
@@ -54,6 +58,27 @@ with patch.object(manager, 'run', side_effect=run):
             raise AssertionError('Authenticated SSH session was not counted')
         with socket.create_connection(('127.0.0.1', 23456), timeout=3) as forwarded:
             assert forwarded.recv(100).startswith(b'SSH-2.0-')
+        assert accounts.verify_password('vpntest', 'Test-password-47')
+        assert not accounts.verify_password('vpntest', 'wrong-password')
+        # Extra services are preinstalled in the disposable test image.
+        with patch.object(extras, 'package'):
+            extras.dropbear(manager, config, 2209)
+        drop = subprocess.Popen(['python3', '/src/vpnmanager/dropbear_runner.py', '2209'])
+        processes.append(drop)
+        time.sleep(0.2)
+        drop_client = subprocess.Popen(['sshpass', '-p', 'Test-password-47', 'ssh', '-N',
+            '-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null',
+            '-o', 'ExitOnForwardFailure=yes', '-L', '127.0.0.1:23457:127.0.0.1:2222', '-p', '2209', 'vpntest@127.0.0.1'])
+        processes.append(drop_client)
+        for _ in range(40):
+            time.sleep(0.1)
+            if online.collect()['dropbear'] >= 1:
+                break
+        else:
+            subprocess.run(['ps', '-eo', 'user,pid,comm,args'], check=True)
+            raise AssertionError('Authenticated Dropbear session was not counted')
+        with socket.create_connection(('127.0.0.1', 23457), timeout=3) as forwarded:
+            assert forwarded.recv(100).startswith(b'SSH-2.0-')
         # Squid parses and actually forwards CONNECT to an allowed local SSH port.
         config['squid_networks'] = ['127.0.0.1/32']
         manager.configure('squid', config, 3128)
@@ -78,11 +103,29 @@ with patch.object(manager, 'run', side_effect=run):
             assert b'403' in denied.recv(4096)
         # Validate TLS configuration with a real daemon startup.
         config['enabled'] = ['tunnel']
+        config['tls_backend'] = 'ssh'
         manager.configure('tls', config, 1443)
         tls = subprocess.Popen(['/usr/bin/stunnel', '/etc/vpnmanager/stunnel.conf'])
         processes.append(tls)
         time.sleep(0.2)
         assert tls.poll() is None, 'TLS listener failed to start'
+        context = ssl.create_default_context(cafile='/etc/vpnmanager/tls.crt')
+        with socket.create_connection(('127.0.0.1', 1443), timeout=5) as raw:
+            with context.wrap_socket(raw, server_hostname='VPN-Manager') as secured:
+                assert secured.recv(100).startswith(b'SSH-2.0-')
+        # SSLH must accept the distribution CLI and route an SSH handshake.
+        with patch.object(extras, 'package'):
+            extras.sslh(manager, config, 1444)
+        unit = Path('/etc/systemd/system/vpnmanager-sslh.service').read_text()
+        command = next(row.split('=', 1)[1] for row in unit.splitlines() if row.startswith('ExecStart='))
+        import shlex
+        multiplexer = subprocess.Popen(shlex.split(command))
+        processes.append(multiplexer)
+        time.sleep(0.2)
+        assert multiplexer.poll() is None, 'SSLH failed to start'
+        with socket.create_connection(('127.0.0.1', 1444), timeout=5) as multiplexed:
+            multiplexed.sendall(b'SSH-2.0-TestClient\r\n')
+            assert multiplexed.recv(100).startswith(b'SSH-2.0-')
         # Configuration generation only: containers do not provide a routed TUN.
         Path('/dev/net').mkdir(exist_ok=True)
         Path('/dev/net/tun').touch(exist_ok=True)
@@ -96,12 +139,20 @@ with patch.object(manager, 'run', side_effect=run):
         # This rejects version-incompatible options without needing a TUN device.
         subprocess.run(['openvpn', '--cd', '/etc/openvpn/server', '--config', 'vpnmanager.conf', '--show-ciphers'], check=True, stdout=subprocess.DEVNULL)
         subprocess.run(['openvpn', '--config', '/tmp/client.ovpn', '--show-ciphers'], check=True, stdout=subprocess.DEVNULL)
+        # Back up / restore only managed users; leave administrator shadow untouched.
+        root_before = manager.capture('getent', 'shadow', 'root')
+        snapshot = private_backup.create(manager)
+        accounts.update('vpntest', limit=77)
+        private_backup.restore(manager, snapshot)
+        assert accounts.load()['vpntest']['limit'] == 1
+        assert manager.capture('getent', 'shadow', 'root') == root_before
         # PAM account expiry is enforced and the periodic job terminates sessions.
         subprocess.run(['chage', '-E', '2000-01-01', 'vpntest'], check=True)
         manager.expire_portable()
         client.wait(timeout=5)
-        assert not online.collect()['ssh']
-        print('PASS: SSH authentication/forwarding, online count, expiry, Squid CONNECT/deny, TLS startup, OpenVPN PKI/profile generation')
+        drop_client.wait(timeout=5)
+        assert not online.collect()['ssh'] and not online.collect()['dropbear']
+        print('PASS: SSH/Dropbear authentication/forwarding, online count, expiry, Squid CONNECT/deny, TLS startup, SSLH routing, password verification, OpenVPN PKI/profile generation')
     finally:
         for process in reversed(processes):
             process.terminate()

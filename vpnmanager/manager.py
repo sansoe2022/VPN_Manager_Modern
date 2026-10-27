@@ -16,7 +16,10 @@ import shutil
 import socket
 import subprocess
 import sys
-import tarfile
+import accounts
+import time
+import signal
+import dropbear_state
 
 from online import collect, serve as online_serve
 from tunnel import serve as tunnel_serve
@@ -29,7 +32,8 @@ DEFAULTS = {'host': '0.0.0.0', 'ssh_port': 22, 'tunnel_port': 80, 'tls_port': 44
             'endpoint': '', 'squid_networks': ['127.0.0.1/32'], 'enabled': []}
 SERVICES = {'tunnel': 'vpnmanager-tunnel', 'tls': 'vpnmanager-tls',
             'online': 'vpnmanager-online', 'squid': 'squid',
-            'openvpn': 'openvpn-server@vpnmanager'}
+            'openvpn': 'openvpn-server@vpnmanager', 'dropbear': 'vpnmanager-dropbear',
+            'sslh': 'vpnmanager-sslh', 'badvpn': 'vpnmanager-badvpn'}
 
 
 def run(*args, **kwargs):
@@ -99,6 +103,8 @@ def initialize():
         run('groupadd', '--system', GROUP)
     if not CONFIG.exists():
         save(dict(DEFAULTS))
+    if not Path('/etc/vpnmanager/banner').exists():
+        write('/etc/vpnmanager/banner', '', 0o644)
     service_unit('vpnmanager-online', '/usr/local/bin/vpnmanager serve-online')
     service_unit('vpnmanager-tunnel', '/usr/local/bin/vpnmanager serve-tunnel')
     service_unit('vpnmanager-tls', '/usr/bin/stunnel /etc/vpnmanager/stunnel.conf')
@@ -156,10 +162,11 @@ def expiry(username, days):
         raise ValueError('Validity must be between 1 and 3650 days.')
     date = dt.date.today() + dt.timedelta(days=days)
     run('chage', '-E', date.isoformat(), username)
+    accounts.update(username, expires_at=None)
     print(f'{username} expires on {date} (server date).')
 
 
-def create_user(username, days):
+def create_user(username, days, secret=None, limit=1):
     valid_user(username)
     try:
         pwd.getpwnam(username)
@@ -170,8 +177,14 @@ def create_user(username, days):
     # No shell access; SSH TCP forwarding uses -N and the dedicated SSH service.
     run('useradd', '-M', '-g', GROUP, '-s', '/usr/sbin/nologin', username)
     try:
-        password(username)
+        if secret is None:
+            password(username)
+        else:
+            if len(secret) < 10 or any(char in secret for char in ':\r\n'):
+                raise ValueError('Use a password of at least 10 characters without colons or newlines.')
+            run('chpasswd', input=f'{username}:{secret}\n')
         expiry(username, days)
+        accounts.update(username, limit=limit)
     except BaseException:
         run('userdel', username)
         raise
@@ -183,6 +196,12 @@ def disconnect(username):
     result = subprocess.run(['pkill', '-TERM', '-u', username], check=False)
     if result.returncode not in (0, 1):
         raise ValueError('Unable to disconnect SSH sessions.')
+    for owner, pid in dropbear_state.sessions():
+        if owner == username:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
     # OpenVPN runs as nobody, so disconnect it via the local management socket.
     sockpath = '/run/openvpn-server/vpnmanager.mgmt'
     if Path(sockpath).exists():
@@ -195,12 +214,24 @@ def disconnect(username):
 
 
 def expire_portable():
-    # Python 3.13 removed spwd. Read shadow through getent, without logging it.
-    today = (dt.date.today() - dt.date(1970, 1, 1)).days
+    # getent works on Python 3.8 through 3.13+, without the removed spwd module.
+    records = accounts.load()
     for username in users():
         fields = capture('getent', 'shadow', username).split(':')
-        if (fields[7] and int(fields[7]) <= today) or fields[1].startswith(('!', '*')):
+        if accounts.expired(records.get(username, {}), fields) or fields[1].startswith(('!', '*')):
+            if not fields[1].startswith(('!', '*')):
+                run('usermod', '-L', username)
             disconnect(username)
+
+
+def enforce_limits():
+    from collections import Counter
+    counts = Counter(name for names in collect()['users'].values() for name in names)
+    for username, record in accounts.load().items():
+        if username in users() and counts[username] > record.get('limit', 1):
+            disconnect(username)
+
+
 
 
 def port(value):
@@ -228,15 +259,18 @@ def start(name, config):
     print(f'{name} started. Allow its TCP port in your host and provider firewall if needed.')
 
 
-def configure_ssh(config, number):
-    if number == config['ssh_port'] and Path('/etc/vpnmanager/sshd_config').exists():
+def configure_ssh(config, number, bind=None):
+    bind = bind or config.get('ssh_bind', '127.0.0.1')
+    ipaddress.ip_address(bind)
+    if number == config['ssh_port'] and bind == config.get('ssh_bind', '127.0.0.1') and Path('/etc/vpnmanager/sshd_config').exists():
         run('systemctl', 'restart', 'vpnmanager-sshd')
         return
     free_port(number)
     Path('/run/sshd').mkdir(mode=0o755, exist_ok=True)
     run('ssh-keygen', '-A')
     text = f'''Port {number}
-ListenAddress 127.0.0.1
+ListenAddress {bind}
+Banner /etc/vpnmanager/banner
 PidFile /run/vpnmanager-sshd.pid
 UsePAM yes
 PasswordAuthentication yes
@@ -259,6 +293,7 @@ Subsystem sftp internal-sftp
     run('/usr/sbin/sshd', '-t', '-f', str(temp))
     os.replace(temp, '/etc/vpnmanager/sshd_config')
     config['ssh_port'] = number
+    config['ssh_bind'] = bind
     save(config)
     run('systemctl', 'enable', '--now', 'vpnmanager-sshd')
     run('systemctl', 'restart', 'vpnmanager-sshd')
@@ -266,21 +301,27 @@ Subsystem sftp internal-sftp
         run('systemctl', 'restart', SERVICES['tunnel'])
     if 'squid' in config['enabled']:
         configure('squid', config, config['squid_port'])
-    print('Dedicated SSH backend listens on loopback; administrator SSH is unchanged.')
+    print(f'Dedicated SSH backend listens on {bind}:{number}; administrator SSH is unchanged.')
 
 
 def squid_config(config):
     networks = [str(ipaddress.ip_network(value, strict=False)) for value in config['squid_networks']]
     if not networks:
         raise ValueError('At least one allowed client IP/CIDR is required.')
-    # Only local VPN backends are reachable, including CONNECT on SSH/OpenVPN.
+    hosts = []
+    for value in config.get('squid_hosts', []):
+        endpoint(value.lstrip('.'))
+        hosts.append(value)
+    host_acl = ('acl manager_hosts dstdomain ' + ' '.join(hosts) + '\n'
+                + 'acl host_ports port 80 443\n'
+                + 'http_access allow manager_clients host_ports manager_hosts\n') if hosts else ''
     return f'''http_port {config['squid_port']}
 visible_hostname vpnmanager
 acl manager_clients src {' '.join(networks)}
 acl vpn_backend dst 127.0.0.1/32
 acl vpn_ports port {config['ssh_port']} {config['openvpn_port']} {config['tunnel_port']}
 http_access allow manager_clients vpn_ports vpn_backend
-http_access deny all
+{host_acl}http_access deny all
 cache deny all
 forwarded_for delete
 via off
@@ -312,15 +353,20 @@ def configure(name, config, number):
                 '-subj', '/CN=VPN-Manager', '-keyout', '/etc/vpnmanager/tls.key',
                 '-out', '/etc/vpnmanager/tls.crt')
             write(cert, Path('/etc/vpnmanager/tls.key').read_text() + Path('/etc/vpnmanager/tls.crt').read_text())
-        if 'tunnel' not in config['enabled']:
-            raise ValueError('Enable the HTTP/WebSocket tunnel first. TLS wraps that tunnel.')
+        backend = config.get('tls_backend', 'tunnel')
+        if backend not in ('ssh', 'tunnel', 'openvpn'):
+            raise ValueError('Choose an SSH, OpenVPN or HTTP/WebSocket TLS backend.')
+        if backend == 'ssh' and not Path('/etc/vpnmanager/sshd_config').exists():
+            raise ValueError('Configure OpenSSH first.')
+        if backend != 'ssh' and backend not in config['enabled']:
+            raise ValueError('Enable the selected TLS backend first.')
         write('/etc/vpnmanager/stunnel.conf', f'''foreground = yes
 pid =
 cert = {cert}
 sslVersionMin = TLSv1.2
 [https-tunnel]
 accept = {config['host']}:{number}
-connect = 127.0.0.1:{config['tunnel_port']}
+connect = 127.0.0.1:{config[backend + '_port']}
 ''')
     elif name == 'tunnel':
         if not Path('/etc/vpnmanager/sshd_config').exists():
@@ -402,6 +448,7 @@ tls-version-min 1.2
 {openvpn_ciphers(version)}
 verify-client-cert none
 username-as-common-name
+duplicate-cn
 plugin {plugins[0]} vpnmanager
 push "redirect-gateway def1 bypass-dhcp"
 push "dhcp-option DNS 1.1.1.1"
@@ -475,6 +522,8 @@ verify-x509-name server name
 auth-user-pass
 auth-nocache
 tls-version-min 1.2
+ignore-unknown-option data-ciphers ncp-ciphers
+data-ciphers AES-256-GCM:AES-128-GCM
 ncp-ciphers AES-256-GCM:AES-128-GCM
 verb 3
 <ca>
@@ -513,84 +562,8 @@ def choose(title, options):
 
 
 def connections():
-    while True:
-        config = load()
-        def setup(name):
-            number = input(f'TCP port [{config[name + "_port"]}]: ').strip() or str(config[name + '_port'])
-            if name == 'squid':
-                values = input('Allowed client IPs/CIDRs (space separated; use actual ISP public IP ranges): ').split()
-                config['squid_networks'] = [str(ipaddress.ip_network(value, strict=False)) for value in values]
-            configure(name, config, number)
-        def ssh():
-            configure_ssh(config, port(input('Dedicated loopback SSH port [2222]: ') or '2222'))
-        def stop():
-            name = input('Service to disable (tunnel/tls/online/squid/openvpn): ').strip()
-            if name not in SERVICES:
-                raise ValueError('Unknown service.')
-            run('systemctl', 'disable', '--now', SERVICES[name])
-            config['enabled'] = [item for item in config['enabled'] if item != name]
-            save(config)
-        action = choose('Connection settings (menu 10)', [
-            ('1', 'Configure dedicated SSH backend', ssh),
-            ('2', 'Configure Squid proxy', lambda: setup('squid')),
-            ('3', 'Configure TLS tunnel', lambda: setup('tls')),
-            ('4', 'Configure OpenVPN TCP', lambda: setup('openvpn')),
-            ('5', 'Configure HTTP / WebSocket tunnel', lambda: setup('tunnel')),
-            ('6', 'Configure online status API', lambda: setup('online')),
-            ('7', 'Disable a service', stop),
-            ('8', 'Connection diagnostics', lambda: diagnostics(config)),
-            ('0', 'Back', None)])
-        if action is None:
-            return
-        try:
-            action()
-        except (ValueError, OSError, subprocess.SubprocessError) as error:
-            print(f'Error: {error}')
-
-
-def user_menu():
-    while True:
-        def name():
-            username = input('Username: ').strip()
-            managed(username)
-            return username
-        def create():
-            create_user(input('Username: ').strip(), int(input('Validity in days [30]: ') or '30'))
-        def delete():
-            username = name()
-            if input(f'Type {username} to delete this account: ') != username:
-                return
-            disconnect(username)
-            run('userdel', username)
-        def renew():
-            expiry(name(), int(input('Validity from today in days: ')))
-        def lock():
-            username = name()
-            run('usermod', '-L', username)
-            disconnect(username)
-        action = choose('User management', [
-            ('1', 'Create account / trial', create), ('2', 'List accounts', lambda: print('\n'.join(users()) or 'No managed users.')),
-            ('3', 'Change password', lambda: password(name())), ('4', 'Renew expiry', renew),
-            ('5', 'Lock and disconnect account', lock), ('6', 'Unlock account', lambda: run('usermod', '-U', name())),
-            ('7', 'Delete account', delete), ('8', 'Show account expiry', lambda: run('chage', '-l', name())), ('0', 'Back', None)])
-        if action is None:
-            return
-        try:
-            action()
-        except (ValueError, OSError, subprocess.SubprocessError) as error:
-            print(f'Error: {error}')
-
-
-def make_backup():
-    path = STATE / 'backups' / ('vpnmanager-' + dt.datetime.now().strftime('%Y%m%d-%H%M%S') + '.tar.gz')
-    # Configuration/PKI backup only. Do not copy the system shadow database.
-    with tarfile.open(path, 'w:gz') as archive:
-        archive.add('/etc/vpnmanager', arcname='vpnmanager')
-        if Path('/etc/openvpn/server/vpnmanager.conf').exists():
-            for item in Path('/etc/openvpn/server').glob('vpnmanager*'):
-                archive.add(item, arcname='openvpn/' + item.name)
-    path.chmod(0o600)
-    print(f'Private configuration backup: {path}. Account passwords are not included.')
+    from classic import Classic
+    Classic(sys.modules[__name__]).connections()
 
 
 def restart_enabled(config):
@@ -601,38 +574,28 @@ def restart_enabled(config):
 
 
 def menu():
-    while True:
-        config = load()
-        def set_endpoint():
-            config['endpoint'] = endpoint(input('Public server IP / hostname: ').strip())
-            save(config)
-        action = choose('VPN Manager', [
-            ('1', 'User management', user_menu),
-            ('2', 'Online sessions', lambda: print(json.dumps(collect(), indent=2))),
-            ('3', 'Service status and diagnostics', lambda: diagnostics(config)),
-            ('4', 'Restart enabled services', lambda: restart_enabled(config)),
-            ('5', 'Back up private configuration', make_backup),
-            ('6', 'Set public server endpoint', set_endpoint),
-            ('7', 'Export OpenVPN client profile', lambda: export_client(config, input('Output path [/root/client.ovpn]: ') or '/root/client.ovpn')),
-            ('8', 'Show listeners', lambda: run('ss', '-ltnp')),
-            ('9', 'Show recent service logs', lambda: run('journalctl', '-n', '80', '--no-pager', *[arg for unit in SERVICES.values() for arg in ('-u', unit)])),
-            ('10', 'Connection settings', connections), ('0', 'Exit', None)])
-        if action is None:
-            return
-        try:
-            action()
-        except (ValueError, OSError, subprocess.SubprocessError) as error:
-            print(f'Error: {error}')
+    from classic import Classic
+    Classic(sys.modules[__name__]).menu()
 
 
 def main():
+    os.environ['LC_ALL'] = 'C.UTF-8'
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', nargs='?', default='menu', choices=['menu', 'initialize', 'online', 'diagnostics', 'expire', 'serve-online', 'serve-tunnel'])
+    parser.add_argument('command', nargs='?', default='menu', choices=['menu', 'initialize', 'online', 'diagnostics', 'expire', 'serve-online', 'serve-tunnel', 'enforce-limits', 'serve-bot', 'feature'])
+    parser.add_argument('name', nargs='?', help='Feature name or bot role')
     args = parser.parse_args()
     root()
     config = load()
     if args.command == 'menu':
         menu()
+    elif args.command == 'feature':
+        from classic import Classic
+        Classic(sys.modules[__name__]).feature(args.name)
+    elif args.command == 'serve-bot':
+        from telegram_bot import serve
+        serve(sys.modules[__name__], args.name)
+    elif args.command == 'enforce-limits':
+        enforce_limits()
     elif args.command == 'serve-online':
         online_serve(config['host'], config['online_port'])
     elif args.command == 'serve-tunnel':

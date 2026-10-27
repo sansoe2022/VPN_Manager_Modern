@@ -1,5 +1,8 @@
 """Count authenticated sessions, independent of client ISP or tunnel transport."""
 import csv
+import base64
+import accounts
+import dropbear_state
 import grp
 import pwd
 import json
@@ -59,13 +62,17 @@ def collect():
             break
         except FileNotFoundError:
             continue
-    return {'ssh': len(ssh), 'openvpn': len(vpn), 'total': len(ssh) + len(vpn),
-            'users': {'ssh': ssh, 'openvpn': vpn}, 'openvpn_status': source}
+    drop = [name for name, _ in dropbear_state.sessions() if name in managed]
+    return {'ssh': len(ssh), 'dropbear': len(drop), 'openvpn': len(vpn), 'total': len(ssh) + len(drop) + len(vpn),
+            'users': {'ssh': ssh, 'dropbear': drop, 'openvpn': vpn}, 'openvpn_status': source}
 
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split('?', 1)[0]
+        if path == '/checkuser':
+            self.check_user()
+            return
         if path not in ('/server/online_app', '/server/online', '/online', '/health'):
             self.send_error(404, 'Unknown endpoint')
             return
@@ -86,6 +93,45 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
         except (OSError, subprocess.SubprocessError):
             self.send_error(503, 'Session data is unavailable')
+
+    def check_user(self):
+        try:
+            config = json.loads(Path('/etc/vpnmanager/config.json').read_text())
+            if not config.get('checkuser'):
+                self.send_error(404, 'Unknown endpoint')
+                return
+            header = self.headers.get('Authorization', '')
+            if not header.startswith('Basic ') or len(header) > 2048:
+                raise ValueError('Authentication required')
+            username, secret = base64.b64decode(header[6:], validate=True).decode().split(':', 1)
+            group = grp.getgrnam('vpnmanager')
+            user = pwd.getpwnam(username)
+            if username not in group.gr_mem and user.pw_gid != group.gr_gid:
+                raise ValueError('Unknown account')
+            if not accounts.verify_password(username, secret):
+                raise ValueError('Invalid credentials')
+            result = subprocess.run(['getent', 'shadow', username], capture_output=True, text=True, check=True)
+            fields = result.stdout.split(':')
+            record = accounts.load().get(username, {})
+            status = 'expired' if accounts.expired(record, fields) else 'locked' if fields[1].startswith(('!', '*')) else 'active'
+            data = collect()
+            count = sum(names.count(username) for names in data['users'].values())
+            body = json.dumps({'username': username, 'status': status, 'online': count,
+                               'limit': record.get('limit', 1), 'expires_at': record.get('expires_at'),
+                               'expiry_day': fields[7] or None}).encode()
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.send_header('Cache-Control', 'no-store')
+            self.end_headers()
+            self.wfile.write(body)
+        except (ValueError, UnicodeError, KeyError):
+            self.send_response(401)
+            self.send_header('WWW-Authenticate', 'Basic realm="CheckUser"')
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+        except (OSError, subprocess.SubprocessError):
+            self.send_error(503, 'Account data is unavailable')
 
 
 def serve(host, port):

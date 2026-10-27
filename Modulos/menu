@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Plain-source SSHPlus menu. No compiled or encrypted payload.
+set -euo pipefail
+exec vpnmanager menu

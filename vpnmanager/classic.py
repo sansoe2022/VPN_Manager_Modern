@@ -1,0 +1,498 @@
+"""Plain-source English version of the two-page SSHPlus menu."""
+import collections
+import datetime as dt
+import getpass
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+import accounts
+import extras
+
+MAIN_LEFT = [('01', 'CREATE USER'), ('02', 'CREATE TRIAL USER'), ('03', 'REMOVE USER'),
+             ('04', 'ONLINE MONITOR'), ('05', 'CHANGE EXPIRY'), ('06', 'CHANGE LIMIT'),
+             ('07', 'CHANGE PASSWORD'), ('08', 'REMOVE EXPIRED'), ('09', 'USER REPORT'),
+             ('10', 'CONNECTION MODE'), ('00', 'EXIT')]
+MAIN_RIGHT = [('11', 'SPEED TEST'), ('12', 'BANNER'), ('13', 'TRAFFIC'), ('14', 'OPTIMIZE'),
+              ('15', 'BACKUP'), ('16', 'VIRTUAL MEMORY'), ('17', 'LIMITER'),
+              ('18', 'BADVPN PRO'), ('19', 'ONLINE APP'), ('20', 'CHECKUSER'),
+              ('21', 'VPS INFO'), ('22', 'MORE >>>')]
+MORE_LEFT = [('23', 'ADD HOST'), ('24', 'REMOVE HOST'), ('25', 'REBOOT SYSTEM'),
+             ('26', 'RESTART SERVICES'), ('27', 'BLOCK TORRENT'), ('28', 'TELEGRAM BOT'),
+             ('29', 'TRIAL BOT')]
+MORE_RIGHT = [('30', 'ROOT PASSWORD'), ('31', 'AUTO EXECUTION'), ('32', 'UPDATE SCRIPT'),
+              ('33', 'REMOVE SCRIPT'), ('34', 'RESELLER BOT'), ('35', 'BACK <<<'), ('00', 'EXIT <<<')]
+CONNECTIONS = [('01', 'OPENSSH'), ('02', 'SQUID PROXY'), ('03', 'DROPBEAR'),
+               ('04', 'OPENVPN'), ('05', 'PROXY / WEBSOCKET'), ('06', 'SSL TUNNEL'),
+               ('07', 'SSLH MULTIPLEX'), ('00', 'BACK TO MAIN MENU')]
+
+
+def choice(value):
+    return value.strip().lstrip('0') or '0'
+
+
+def table(left, right, color=False):
+    def item(entry):
+        number, label = entry
+        if color:
+            return f'\033[31m[\033[36m{number}\033[31m] \033[33m{label:<18}\033[0m'
+        return f'[{number}] {label:<18}'
+    lines = []
+    for index in range(max(len(left), len(right))):
+        first = item(left[index]) if index < len(left) else ' ' * 23
+        second = item(right[index]) if index < len(right) else ''
+        lines.append(first + ' ' + second)
+    return '\n'.join(lines)
+
+
+class Classic:
+    def __init__(self, core):
+        self.m = core
+        self.color = sys.stdout.isatty() and 'NO_COLOR' not in os.environ
+        self.removed = False
+        self.last_cpu = None
+
+    def paint(self, text, code):
+        return f'\033[{code}m{text}\033[0m' if self.color else text
+
+    def clear(self):
+        if self.color:
+            print('\033[2J\033[H', end='')
+
+    def pause(self):
+        input('\nPress Enter to return: ')
+
+    def metadata(self, username):
+        fields = self.m.capture('getent', 'shadow', username).split(':')
+        record = accounts.load().get(username, {})
+        expired = accounts.expired(record, fields)
+        if record.get('expires_at'):
+            date = dt.datetime.fromtimestamp(record['expires_at']).strftime('%Y-%m-%d %H:%M')
+        elif fields[7]:
+            date = (dt.date(1970, 1, 1) + dt.timedelta(days=int(fields[7]))).isoformat()
+        else:
+            date = 'Never'
+        return record, expired, date, fields[1].startswith(('!', '*'))
+
+    def header(self, title='SSHPLUS MANAGER | Edit: @kiritosshxd'):
+        self.clear()
+        line = '=' * 47
+        print(self.paint(line, '36'))
+        print(self.paint(f'{title:^47}', '41;97'))
+        try:
+            release = dict(row.split('=', 1) for row in Path('/etc/os-release').read_text().splitlines() if '=' in row)
+            osname = release.get('ID', 'Linux').strip('"').title() + ' ' + release.get('VERSION_ID', '').strip('"')
+            memory = dict((row.split(':')[0], int(row.split()[1])) for row in Path('/proc/meminfo').read_text().splitlines())
+            cpu = list(map(int, Path('/proc/stat').read_text().splitlines()[0].split()[1:]))
+            cpu_total, cpu_idle = sum(cpu[:8]), cpu[3] + cpu[4]
+            previous_total, previous_idle = self.last_cpu or (0, 0)
+            cpu_used = 100 * (1 - (cpu_idle - previous_idle) / max(1, cpu_total - previous_total))
+            self.last_cpu = (cpu_total, cpu_idle)
+            total = memory['MemTotal'] / 1024 ** 2
+            used = 100 * (1 - memory.get('MemAvailable', memory['MemFree']) / memory['MemTotal'])
+            online = self.m.collect()['total']
+            names = self.m.users()
+            expired = sum(self.metadata(name)[1] for name in names)
+            print(self.paint(f'{"SYSTEM":<16}{"RAM MEMORY":<16}PROCESSOR', '36'))
+            print(f'{osname[:15]:<16}{"Total:%.2fGiB" % total:<16}Cores: {os.cpu_count()}')
+            print(f'{dt.datetime.now().strftime("%H:%M:%S"):<16}{"Used: %.1f%%" % used:<16}Used: {cpu_used:.1f}%')
+            print(self.paint('-' * 47, '36'))
+            print(f'{"Online: " + str(online):<16}{"Expired: " + str(expired):<16}Total: {len(names)}')
+        except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+            print('System statistics are temporarily unavailable.')
+        print(self.paint(line, '36'))
+
+    def active(self, unit):
+        return subprocess.run(['systemctl', 'is-active', '--quiet', unit],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+
+    def marked(self, entries):
+        units = {'17': 'vpnmanager-limiter.timer', '18': 'vpnmanager-badvpn',
+                 '19': 'vpnmanager-online', '20': 'vpnmanager-online',
+                 '27': 'vpnmanager-torrent', '28': 'vpnmanager-bot-admin',
+                 '29': 'vpnmanager-bot-trial', '34': 'vpnmanager-bot-reseller'}
+        config = self.m.load()
+        result = []
+        for number, label in entries:
+            if number in units:
+                running = self.active(units[number])
+                if number == '20':
+                    running = running and config.get('checkuser', False)
+                label += ' *' if running else ' o'
+            result.append((number, label))
+        return result
+
+
+    def menu(self):
+        page = 1
+        while True:
+            self.header()
+            print(table(self.marked(MAIN_LEFT if page == 1 else MORE_LEFT),
+                        self.marked(MAIN_RIGHT if page == 1 else MORE_RIGHT), self.color))
+            print(self.paint('\n' + '=' * 47, '36'))
+            selected = choice(input('WHAT WOULD YOU LIKE TO DO? : '))
+            if selected == '0':
+                return
+            if selected == '22':
+                page = 2
+                continue
+            if selected == '35':
+                page = 1
+                continue
+            visible = MAIN_LEFT + MAIN_RIGHT if page == 1 else MORE_LEFT + MORE_RIGHT
+            if selected not in {choice(key) for key, _ in visible}:
+                print('Invalid option.')
+                continue
+            try:
+                self.feature(selected)
+            except KeyboardInterrupt:
+                print('\nOperation cancelled.')
+            except (ValueError, OSError, subprocess.SubprocessError) as error:
+                print(f'Error: {error}')
+            if self.removed:
+                return
+            if selected != '10':
+                self.pause()
+
+    def username(self):
+        names = sorted(self.m.users())
+        print('Managed users: ' + (', '.join(names) or '(none)'))
+        username = input('Username: ').strip()
+        self.m.managed(username)
+        return username
+
+    def create(self, trial=False):
+        name = input('Username: ').strip()
+        limit = int(input('Simultaneous connection limit [1]: ') or '1')
+        if not 1 <= limit <= 1000:
+            raise ValueError('Choose a connection limit from 1 to 1000.')
+        minutes = int(input('Trial validity in minutes [60]: ') or '60') if trial else None
+        if trial and not 1 <= minutes <= 10080:
+            raise ValueError('Trial validity must be 1-10080 minutes.')
+        days = (minutes // 1440 + 2) if trial else int(input('Validity in days [30]: ') or '30')
+        self.m.create_user(name, days, limit=limit)
+        if trial:
+            accounts.update(name, expires_at=int(time.time()) + minutes * 60, trial=True)
+            print(f'Trial expires in {minutes} minutes. Active sessions will be disconnected by the expiry timer.')
+        print('Tip: enable menu 17 to enforce the connection limit.')
+
+    def remove(self, name=None, confirm=True):
+        name = name or self.username()
+        self.m.managed(name)
+        if confirm and input(f'Type {name} to remove this account: ') != name:
+            return
+        self.m.disconnect(name)
+        self.m.run('userdel', name)
+        accounts.remove(name)
+        print('Removed: ' + name)
+
+    def remove_expired(self):
+        names = [name for name in self.m.users() if self.metadata(name)[1]]
+        print('Expired users: ' + (', '.join(names) or '(none)'))
+        if names and input('Remove these accounts? [y/N]: ').lower() == 'y':
+            for name in names:
+                self.remove(name, False)
+
+    def report(self, one=None):
+        data = self.m.collect()
+        counts = collections.Counter(name for values in data['users'].values() for name in values)
+        print(f'{"USER":<20}{"ONLINE/LIMIT":<16}{"EXPIRY":<20}STATUS')
+        for name in ([one] if one else sorted(self.m.users())):
+            record, expired, expiry, locked = self.metadata(name)
+            status = 'Expired' if expired else 'Locked' if locked else 'Active'
+            connection = f'{counts[name]}/{record.get("limit", 1)}'
+            print(f'{name:<20}{connection:<16}{expiry:<20}{status}')
+
+    def monitor(self):
+        data = self.m.collect()
+        per_protocol = {protocol: collections.Counter(names) for protocol, names in data['users'].items()}
+        print(f'{"USER":<20}{"STATUS":<10}{"SSH":>5}{"DROP":>6}{"OVPN":>6}{"TOTAL/LIMIT":>14}')
+        records = accounts.load()
+        for name in sorted(self.m.users()):
+            values = [per_protocol.get(protocol, {}).get(name, 0) for protocol in ('ssh', 'dropbear', 'openvpn')]
+            total = sum(values)
+            limit = records.get(name, {}).get('limit', 1)
+            print(f'{name:<20}{"Online" if total else "Offline":<10}{values[0]:>5}{values[1]:>6}{values[2]:>6}{str(total) + "/" + str(limit):>14}')
+
+    def change_limit(self):
+        name = self.username()
+        limit = int(input('New simultaneous connection limit: '))
+        if not 1 <= limit <= 1000:
+            raise ValueError('Choose 1-1000 connections.')
+        accounts.update(name, limit=limit)
+        print('Limit saved. Enable menu 17 to enforce it.')
+
+    def change_expiry(self):
+        name = self.username()
+        value = input('Expiry date (YYYY-MM-DD), or number of days from today: ').strip()
+        days = int(value) if value.isdigit() else (dt.date.fromisoformat(value) - dt.date.today()).days
+        if days <= 0:
+            date = dt.date.today() + dt.timedelta(days=days)
+            self.m.run('chage', '-E', date.isoformat(), name)
+            accounts.update(name, expires_at=None)
+            self.m.run('usermod', '-L', name)
+            self.m.disconnect(name)
+            print('Account expired and disconnected: ' + name)
+        else:
+            self.m.expiry(name, days)
+            self.m.run('usermod', '-U', name)
+
+    def service(self, name):
+        config = self.m.load()
+        active = name in config['enabled']
+        options = [('1', 'Install / configure', 'setup'), ('2', 'Disable service', 'stop'),
+                   ('3', 'Restart service', 'restart'), ('0', 'Back', None)]
+        if name == 'openvpn':
+            options.insert(3, ('4', 'Export client profile', 'export'))
+        action = self.m.choose(name.upper() + (' [enabled]' if active else ' [disabled]'), options)
+        if action is None:
+            return
+        if action in ('stop', 'restart'):
+            self.m.run('systemctl', 'disable' if action == 'stop' else 'restart',
+                       *(['--now'] if action == 'stop' else []), self.m.SERVICES[name])
+            if action == 'stop':
+                config['enabled'] = [item for item in config['enabled'] if item != name]
+                self.m.save(config)
+            return
+        if action == 'export':
+            if not config['endpoint']:
+                config['endpoint'] = self.m.endpoint(input('Public server IP / domain: '))
+                self.m.save(config)
+            self.m.export_client(config, input('Profile output [/root/client.ovpn]: ') or '/root/client.ovpn')
+            return
+        defaults = {'dropbear': 109, 'sslh': 443, 'badvpn': 7300}
+        number = self.m.port(input(f'TCP port [{config.get(name + "_port", defaults.get(name))}]: ') or config.get(name + '_port', defaults.get(name)))
+        if name == 'tls':
+            backend = self.m.choose('TLS BACKEND', [('1', 'OpenSSH', 'ssh'), ('2', 'OpenVPN', 'openvpn'), ('3', 'HTTP / WebSocket', 'tunnel'), ('0', 'Back', None)])
+            if backend is None:
+                return
+            config['tls_backend'] = backend
+        if name == 'squid':
+            networks = input('Allowed client IPs/CIDRs (space separated): ').split()
+            if not networks:
+                raise ValueError('Enter at least one client IP/CIDR.')
+            config['squid_networks'] = networks
+        if name in ('dropbear', 'sslh', 'badvpn'):
+            getattr(extras, name)(self.m, config, number)
+        else:
+            self.m.configure(name, config, number)
+
+    def openssh(self):
+        config = self.m.load()
+        action = self.m.choose('OPENSSH', [('1', 'Configure OpenSSH port', 'setup'),
+            ('2', 'Restart managed OpenSSH', 'restart'), ('0', 'Back', None)])
+        if action == 'setup':
+            number = self.m.port(input('Managed SSH port [2222]: ') or '2222')
+            bind = input('Listen address [0.0.0.0]: ') or '0.0.0.0'
+            self.m.configure_ssh(config, number, bind)
+        elif action == 'restart':
+            self.m.run('systemctl', 'restart', 'vpnmanager-sshd')
+
+    def connections(self):
+        actions = {'1': self.openssh, '2': lambda: self.service('squid'),
+                   '3': lambda: self.service('dropbear'), '4': lambda: self.service('openvpn'),
+                   '5': lambda: self.service('tunnel'), '6': lambda: self.service('tls'),
+                   '7': lambda: self.service('sslh')}
+        while True:
+            self.header('CONNECTION MODE')
+            for number, label in CONNECTIONS:
+                print(self.paint(f'[{number}] {label}', '33'))
+            selected = choice(input('WHAT WOULD YOU LIKE TO DO? : '))
+            # Return to the caller. Never exit the program or recursively run menu.
+            if selected == '0':
+                return
+            if selected not in actions:
+                print('Invalid option.')
+                continue
+            try:
+                actions[selected]()
+            except (ValueError, OSError, subprocess.SubprocessError) as error:
+                print(f'Error: {error}')
+            self.pause()
+
+    def banner(self):
+        action = self.m.choose('SSH LOGIN BANNER', [('1', 'Set banner', 'set'), ('2', 'Remove banner', 'remove'), ('0', 'Back', None)])
+        if action is None:
+            return
+        value = input('Banner text: ') if action == 'set' else ''
+        if action == 'set' and input('Format: [1] plain text, [2] HTML [1]: ') == '2':
+            import html
+            size = int(input('HTML heading size (1-6) [3]: ') or '3')
+            color = input('HTML color (name or #RRGGBB) [green]: ') or 'green'
+            if not 1 <= size <= 6 or not re.fullmatch(r'[a-zA-Z]+|#[0-9a-fA-F]{6}', color):
+                raise ValueError('Invalid heading size or color.')
+            value = f'<h{size}><font color="{color}">{html.escape(value)}</font></h{size}>'
+        self.m.write('/etc/vpnmanager/banner', value + '\n', 0o644)
+        if Path('/etc/vpnmanager/sshd_config').exists():
+            path = Path('/etc/vpnmanager/sshd_config')
+            text = '\n'.join(row for row in path.read_text().splitlines() if not row.startswith('Banner '))
+            self.m.write(path, text + '\nBanner /etc/vpnmanager/banner\n')
+            self.m.run('/usr/sbin/sshd', '-t', '-f', str(path))
+            self.m.run('systemctl', 'reload-or-restart', 'vpnmanager-sshd')
+        if 'dropbear' in self.m.load()['enabled']:
+            self.m.run('systemctl', 'restart', 'vpnmanager-dropbear')
+        print('Banner saved.')
+
+    def traffic(self):
+        print(f'{"INTERFACE":<20}{"RECEIVED GiB":>15}{"SENT GiB":>15}')
+        for path in sorted(Path('/sys/class/net').iterdir()):
+            received = int((path / 'statistics/rx_bytes').read_text()) / 1024 ** 3
+            sent = int((path / 'statistics/tx_bytes').read_text()) / 1024 ** 3
+            print(f'{path.name:<20}{received:>15.3f}{sent:>15.3f}')
+        print('Interface totals since boot, including SSH/VPN traffic.')
+
+    def optimize(self):
+        action = self.m.choose('OPTIMIZE SERVER', [('1', 'Refresh / repair / clean package cache', 'packages'),
+            ('2', 'Enable TCP BBR when available', 'bbr'), ('3', 'Upgrade distribution packages', 'upgrade'), ('0', 'Back', None)])
+        if action == 'packages':
+            self.m.run('apt-get', '-o', 'Acquire::Retries=3', 'update')
+            self.m.run('apt-get', '-f', 'install', '-y')
+            self.m.run('apt-get', 'autoclean')
+        elif action == 'upgrade':
+            if input('Upgrade installed OS packages now? [y/N]: ').lower() == 'y':
+                self.m.run('apt-get', '-o', 'Acquire::Retries=3', 'update')
+                self.m.run('apt-get', '-o', 'Acquire::Retries=3', 'upgrade', '-y')
+        elif action == 'bbr':
+            if not shutil.which('modprobe'):
+                extras.package(self.m, 'kmod')
+            self.m.run('modprobe', 'tcp_bbr')
+            self.m.write('/etc/sysctl.d/91-vpnmanager-bbr.conf', 'net.core.default_qdisc=fq\nnet.ipv4.tcp_congestion_control=bbr\n', 0o644)
+            self.m.run('sysctl', '-p', '/etc/sysctl.d/91-vpnmanager-bbr.conf')
+
+    def backup(self):
+        from private_backup import create, restore
+        action = self.m.choose('BACKUP MANAGER', [('1', 'Create private backup', 'create'),
+            ('2', 'Restore private backup', 'restore'), ('0', 'Back', None)])
+        if action == 'create':
+            print('Backup saved: ' + str(create(self.m)))
+        elif action == 'restore':
+            filename = input('Private backup archive path: ')
+            if input('Type RESTORE to restore managed accounts/configuration: ') == 'RESTORE':
+                restore(self.m, filename)
+
+    def hosts(self, remove=False):
+        config = self.m.load()
+        hosts = config.get('squid_hosts', [])
+        print('Squid host list: ' + (', '.join(hosts) or '(empty)'))
+        value = input('Host/domain (for example .example.com): ').strip().lower()
+        if not re.fullmatch(r'\.?[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?', value):
+            raise ValueError('Enter a domain name without a URL scheme, path, spaces or port.')
+        self.m.endpoint(value.lstrip('.'))
+        if remove:
+            if value not in hosts:
+                raise ValueError('That host is not in the list.')
+            hosts.remove(value)
+        elif value not in hosts:
+            hosts.append(value)
+        config['squid_hosts'] = hosts
+        self.m.save(config)
+        if 'squid' in config['enabled']:
+            self.m.configure('squid', config, config['squid_port'])
+        print('Squid host list updated.')
+
+    def auto(self):
+        config = self.m.load()
+        print('Enabled on boot: ' + (', '.join(config['enabled']) or '(none)'))
+        action = self.m.choose('AUTO EXECUTION', [('1', 'Enable configured services on boot', 'enable'),
+            ('2', 'Disable configured services at boot', 'disable'), ('0', 'Back', None)])
+        if action:
+            for name in config['enabled']:
+                self.m.run('systemctl', action, self.m.SERVICES[name])
+            if Path('/etc/vpnmanager/sshd_config').exists():
+                self.m.run('systemctl', action, 'vpnmanager-sshd')
+
+    def update(self):
+        checkout = Path('/opt/vpnmanager-source')
+        if checkout.exists():
+            remote = self.m.capture('git', '-C', str(checkout), 'remote', 'get-url', 'origin')
+            if remote != 'https://github.com/sansoe2022/VPN_Manager_Modern.git':
+                raise ValueError('The update directory belongs to another repository.')
+            self.m.run('git', '-C', str(checkout), 'pull', '--ff-only')
+        else:
+            extras.package(self.m, 'git')
+            self.m.run('git', 'clone', 'https://github.com/sansoe2022/VPN_Manager_Modern.git', str(checkout))
+        self.m.run('bash', str(checkout / 'install.sh'))
+        print('Updated. Restart services from menu 26.')
+
+    def uninstall(self):
+        if input('Type REMOVE to uninstall the manager (accounts and backups stay): ') != 'REMOVE':
+            return
+        units = list(self.m.SERVICES.values()) + ['vpnmanager-sshd', 'vpnmanager-expire.timer',
+            'vpnmanager-limiter.timer', 'vpnmanager-bot-admin', 'vpnmanager-bot-trial', 'vpnmanager-bot-reseller']
+        for unit in units:
+            result = subprocess.run(['systemctl', 'disable', '--now', unit], capture_output=True, text=True)
+            if result.returncode and 'does not exist' not in result.stderr and 'not loaded' not in result.stderr and 'No such file' not in result.stderr:
+                raise ValueError(result.stderr.strip())
+        for path in Path('/etc/systemd/system').glob('vpnmanager-*'):
+            if path.is_file() and path.name not in ('vpnmanager-firewall.service', 'vpnmanager-torrent.service'):
+                path.unlink()
+        self.m.run('systemctl', 'daemon-reload')
+        for name in ('vpnmanager', 'vpnmenu', 'menu'):
+            Path('/usr/local/bin', name).unlink(missing_ok=True)
+        shutil.rmtree('/usr/local/lib/vpnmanager')
+        self.removed = True
+        print('Manager removed. Private config, keys, accounts, backups and firewall rules are retained for review.')
+
+    def feature(self, number):
+        aliases = {'criarusuario': '1', 'criarteste': '2', 'remover': '3', 'sshmonitor': '4',
+            'mudardata': '5', 'alterarlimite': '6', 'alterarsenha': '7', 'uexpired': '8', 'infousers': '9',
+            'conexao': '10', 'speedtest': '11', 'banner': '12', 'trafego': '13', 'otimizar': '14',
+            'userbackup': '15', 'swapmemory': '16', 'limiter': '17', 'badvpn': '18', 'onlineapp': '19',
+            'initcheck': '20', 'detalhes': '21', 'addhost': '23', 'delhost': '24', 'reiniciarsistema': '25',
+            'reiniciarservicos': '26', 'blockt': '27', 'botssh': '28', 'botteste.sh': '29', 'senharoot': '30',
+            'autostart': '31', 'attscript': '32', 'delscript': '33', 'botvenda': '34'}
+        number = aliases.get(number, choice(number or ''))
+        actions = {
+            '1': lambda: self.create(), '2': lambda: self.create(True), '3': self.remove,
+            '4': self.monitor, '5': self.change_expiry, '6': self.change_limit,
+            '7': lambda: self.m.password(self.username()), '8': self.remove_expired,
+            '9': self.report, '10': self.connections,
+            '11': self.speedtest, '12': self.banner, '13': self.traffic, '14': self.optimize,
+            '15': self.backup, '16': lambda: extras.swap(self.m, int(input('Swap size in GiB (0 to disable): '))),
+            '17': lambda: extras.limiter(self.m, input('Enable connection limiter? [y/N]: ').lower() == 'y'),
+            '18': lambda: self.service('badvpn'), '19': lambda: self.service('online'),
+            '20': self.checkuser, '21': lambda: self.m.diagnostics(self.m.load()),
+            '23': self.hosts, '24': lambda: self.hosts(True), '25': self.reboot,
+            '26': lambda: self.m.restart_enabled(self.m.load()),
+            '27': lambda: extras.torrent(self.m, input('Enable torrent filtering? [y/N]: ').lower() == 'y'),
+            '28': lambda: self.bot('admin'), '29': lambda: self.bot('trial'),
+            '30': lambda: self.m.run('passwd', 'root'), '31': self.auto, '32': self.update,
+            '33': self.uninstall, '34': lambda: self.bot('reseller')}
+        if number not in actions:
+            raise ValueError('Unknown menu feature.')
+        actions[number]()
+
+    def reboot(self):
+        if input('Reboot this server now? Type REBOOT: ') == 'REBOOT':
+            self.m.run('systemctl', 'reboot')
+
+    def speedtest(self):
+        if not shutil.which('speedtest-cli'):
+            extras.package(self.m, 'speedtest-cli')
+        self.m.run('speedtest-cli', '--secure')
+
+    def checkuser(self):
+        action = self.m.choose('CHECKUSER', [('1', 'Check a managed user locally', 'local'),
+            ('2', 'Enable authenticated CheckUser API', 'api'), ('3', 'Disable CheckUser API', 'disable'), ('0', 'Back', None)])
+        if action == 'local':
+            self.report(self.username())
+        elif action == 'disable':
+            config = self.m.load()
+            config['checkuser'] = False
+            self.m.save(config)
+            print('CheckUser API disabled. Online count endpoints are unchanged.')
+        elif action == 'api':
+            config = self.m.load()
+            config['checkuser'] = True
+            self.m.save(config)
+            self.service('online')
+            print('GET /checkuser uses HTTP Basic authentication with a managed account. Use HTTPS in front of it.')
+
+    def bot(self, role):
+        from telegram_bot import configure
+        configure(self.m, role)

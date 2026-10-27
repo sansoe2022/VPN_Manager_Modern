@@ -8,12 +8,20 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        distro: ['ubuntu:20.04', 'ubuntu:22.04', 'ubuntu:24.04', 'debian:12', 'debian:13']
+        distro: ['ubuntu:20.04', 'ubuntu:22.04', 'ubuntu:24.04', 'ubuntu:26.04', 'debian:12', 'debian:13']
     steps:
       - uses: actions/checkout@v4
       - name: Check shell syntax
-        run: bash -n install.sh Plus
+        run: |
+          for script in install.sh Plus menu Modulos/*; do bash -n "$script"; done
       - name: Build and run distro integration checks
         run: |
           docker build --build-arg DISTRO=${{ matrix.distro }} -f tests/Dockerfile -t vpnmanager-test .
           docker run --rm vpnmanager-test
+
+  badvpn-source:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the pinned BadVPN source used by menu 18
+        run: python3 tests/badvpn_build.py

@@ -19,3 +19,16 @@ required on your own VPS and client networks:
 
 Record OS version, CPU architecture, OpenVPN/Squid/OpenSSH versions and test date.
 Local container verification uses amd64; ARM64 requires its own acceptance run.
+
+For the restored original menu, additionally verify:
+
+- 10 → 00 returns to the first page; 22/35 switch pages; 00 exits from either main page.
+- Create a minute-based trial and check expiry/disconnection after the timer runs.
+- Enable 17, exceed a user's combined connection limit and check disconnection.
+- Test banner display in your chosen SSH app, including HTML if that app supports it.
+- Test BadVPN UDP relay through an authenticated SSH client on your network.
+- Confirm swap changes affect only the manager's own file and survive a reboot.
+- Verify torrent rules/BBR against the actual host kernel and existing firewall policy.
+- Test all configured Telegram bot roles with real tokens, including a denied user,
+  one-trial-per-day behavior and reseller account ownership/quota limits.
+- Verify CheckUser over trusted HTTPS and confirm it discloses only the authenticated account.

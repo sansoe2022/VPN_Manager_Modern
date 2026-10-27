@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# English SSHPlus feature; full readable implementation: vpnmanager/classic.py
+set -euo pipefail
+exec vpnmanager feature 15

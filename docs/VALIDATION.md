@@ -1,31 +1,39 @@
 # Validation record
 
-Date: 2026-10-27. Architecture: amd64. Disposable Docker containers.
+Date: 2026-10-27. Architecture: amd64. Disposable distro containers.
 
-| Distribution | Unit checks | Integration checks |
-| --- | --- | --- |
-| Ubuntu 20.04 | 9 passed | Passed |
-| Ubuntu 22.04 | 9 passed | Passed |
-| Ubuntu 24.04 | 9 passed | Passed |
-| Debian 12 | 9 passed | Passed |
-| Debian 13 | 9 passed | Passed |
+The original-numbered English menu is covered by 22 unit checks, including the
+specific **10 → 00 → main menu**, **22 → More → 35 → main menu** paths. The removed
+V2Ray slot is rejected without closing the program. All main-page/More-page numbers
+are retained, and every connection entry except 08 keeps its original number.
 
-Integration checks use real distribution OpenSSH/PAM, Squid, stunnel, OpenSSL,
-EasyRSA and OpenVPN packages. They verify SSH password authentication and TCP
-forwarding, live online counts, termination of expired accounts, Squid's allowed
-CONNECT and denied destination rules, TLS listener startup, unique CA/server key
-creation, and OpenVPN profile generation without a server private key. The installed OpenVPN
-also parses both generated server and client configurations. Ubuntu 20.04 was
-checked with Python 3.8 and OpenVPN 2.4.12, including its version-command exit
-status, legacy key-generation syntax and `ncp-ciphers` directive. Generated
-systemd units pass `systemd-analyze verify`.
+Compatibility matrix: Ubuntu 20.04/22.04/24.04/26.04 and Debian 12/13.
+The integration script checks real distribution daemons/libraries:
 
-Unit checks exercise OpenSSH's old and new process formats, administrator-session
-exclusion, OpenVPN CSV/TSV parsing, legacy API field names, CIDR/input validation,
-OpenVPN version/cipher selection, fragmented HTTP headers with pipelined binary data, framed WebSocket binary transfer,
-and rejected unknown tunnel routes.
+- OpenSSH and Dropbear password login and TCP forwarding.
+- Authenticated online counts, including root-owned Dropbear forwarding sessions.
+- Dropbear process start identity, preventing stale/PID-reuse counts.
+- Expiry disconnection across SSH and Dropbear.
+- libcrypt password verification, including Python versions without the crypt/spwd modules.
+- Squid CONNECT to an allowed backend and denial of an unallowed destination.
+- TLS listener startup and a verified TLS-to-SSH connection.
+- SSLH startup and routing an actual SSH handshake.
+- OpenVPN CA/server-key generation and parser acceptance of server/client configs.
+- Managed-account backup/restore with password hashes and metadata; the administrator's
+  shadow record remains unchanged.
+- Generated initial systemd units pass `systemd-analyze verify`.
 
-Systemctl/sysctl calls are substituted in container integration checks. There is
-no systemd PID 1 or routed TUN device. These results do not validate a full VPS
-installation/reboot, OpenVPN client routing/egress, a domain certificate, ARM64,
-future distribution releases or any ISP's reachability. Follow ACCEPTANCE.md.
+The pinned upstream BadVPN 1.999.130 revision
+`752c6b492bc6866e8af8313a6e348d5e0370fe1f` is separately compiled and its binary started.
+No opaque binary from the original repository is shipped or executed.
+
+Offline checks cover metadata persistence, trial-expiry boundaries, combined-protocol
+limits, backup path/link rejection, bot owner/reseller authorization/quota rules,
+WebSocket framing, fragmented HTTP headers and legacy API field names. They do not
+contact Telegram or send real messages.
+
+Systemctl/sysctl are substituted in daemon integration checks: containers do not have
+systemd PID 1 or a routed TUN device. Full installation/reboot, routed OpenVPN egress,
+real Telegram tokens/chats, speed-test providers, swap/kernel firewall capabilities,
+ARM64 and individual ISP reachability require a real VPS/client acceptance run.
+See [ACCEPTANCE.md](ACCEPTANCE.md). Future OS releases require their own check run.

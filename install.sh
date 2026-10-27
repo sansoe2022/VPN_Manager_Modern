@@ -17,14 +17,17 @@ if [[ -d /etc/SSHPlus || -d /etc/VPNManager ]]; then
   exit 1
 fi
 export DEBIAN_FRONTEND=noninteractive
+export LC_ALL=C.UTF-8
 apt-get -o Acquire::Retries=3 update
-apt-get -o Acquire::Retries=3 install -y --no-install-recommends python3 openssh-server openssl ca-certificates iproute2 procps squid stunnel4 openvpn easy-rsa iptables
+apt-get -o Acquire::Retries=3 install -y --no-install-recommends python3 openssh-server openssl ca-certificates iproute2 procps squid stunnel4 openvpn easy-rsa iptables util-linux
 install -d -m 0755 /usr/local/lib/vpnmanager
 install -m 0644 "$src"/vpnmanager/*.py /usr/local/lib/vpnmanager/
+install -d -m 0755 /usr/local/lib/vpnmanager/Modulos
+install -m 0755 "$src"/Modulos/* /usr/local/lib/vpnmanager/Modulos/
 install -d -m 0700 /etc/vpnmanager /var/lib/vpnmanager /var/lib/vpnmanager/backups
 cat > /usr/local/bin/vpnmanager <<'WRAPPER'
 #!/usr/bin/env bash
-exec python3 /usr/local/lib/vpnmanager/manager.py "$@"
+exec python3 -B /usr/local/lib/vpnmanager/manager.py "$@"
 WRAPPER
 chmod 0755 /usr/local/bin/vpnmanager
 for alias in menu vpnmenu; do
@@ -35,4 +38,4 @@ for alias in menu vpnmenu; do
 done
 vpnmanager initialize
 printf '\nInstallation complete. Run: sudo vpnmanager\n'
-printf 'Optional services are enabled from Connection settings (menu 10).\n'
+printf 'Original SSHPlus numbering is restored. Connection mode: 10; back: 00; more: 22.\n'
