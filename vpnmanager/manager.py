@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Readable VPN Manager CLI for Ubuntu 22.04+ and Debian 12+."""
+"""Readable VPN Manager CLI for Ubuntu 20.04+ and Debian 12+."""
 import argparse
 import asyncio
 import datetime as dt
@@ -335,9 +335,27 @@ connect = 127.0.0.1:{config['tunnel_port']}
         configure('tls', config, config['tls_port'])
 
 
+def openvpn_version():
+    match = re.search(r'^OpenVPN (\d+)\.(\d+)', capture('openvpn', '--version'))
+    if not match:
+        raise ValueError('Cannot determine the installed OpenVPN version.')
+    version = tuple(map(int, match.groups()))
+    if version < (2, 4):
+        raise ValueError('OpenVPN 2.4 or later is required.')
+    return version
+
+
+def openvpn_ciphers(version):
+    # Ubuntu 20.04 ships OpenVPN 2.4, before data-ciphers was introduced.
+    if version < (2, 5):
+        return 'ncp-ciphers AES-256-GCM:AES-128-GCM'
+    return 'data-ciphers AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305'
+
+
 def setup_openvpn(config):
     if not Path('/dev/net/tun').exists():
         raise ValueError('The host must provide /dev/net/tun for OpenVPN.')
+    version = openvpn_version()
     directory = Path('/etc/openvpn/server')
     directory.mkdir(parents=True, exist_ok=True)
     pki = Path('/etc/vpnmanager/pki')
@@ -356,7 +374,10 @@ def setup_openvpn(config):
         destination.chmod(0o600)
     key = directory / 'vpnmanager-tls.key'
     if not key.exists():
-        run('openvpn', '--genkey', 'secret', str(key))
+        if version < (2, 5):
+            run('openvpn', '--genkey', '--secret', str(key))
+        else:
+            run('openvpn', '--genkey', 'secret', str(key))
         key.chmod(0o600)
     plugins = list(Path('/usr/lib').glob('**/openvpn-plugin-auth-pam.so'))
     if not plugins:
@@ -376,7 +397,7 @@ key vpnmanager-server.key
 dh none
 tls-crypt vpnmanager-tls.key
 tls-version-min 1.2
-data-ciphers AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305
+{openvpn_ciphers(version)}
 verify-client-cert none
 username-as-common-name
 plugin {plugins[0]} vpnmanager
@@ -452,7 +473,7 @@ verify-x509-name server name
 auth-user-pass
 auth-nocache
 tls-version-min 1.2
-data-ciphers AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305
+ncp-ciphers AES-256-GCM:AES-128-GCM
 verb 3
 <ca>
 {ca}</ca>

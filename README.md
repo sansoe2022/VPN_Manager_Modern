@@ -1,6 +1,6 @@
 # VPN Manager Modern
 
-Readable English VPN/SSH server management for **Ubuntu 22.04+ and Debian 12+**.
+Readable English VPN/SSH server management for **Ubuntu 20.04+ and Debian 12+**.
 Rebuilt from [sansoe2022/VPN_Manager](https://github.com/sansoe2022/VPN_Manager).
 The original repository is unchanged. This repository contains a fresh source tree,
 without the old binaries, bundled credentials or their Git history.
@@ -45,6 +45,10 @@ silently. Existing administrator SSH settings and login access remain in place.
 **Menu 10 → 8 is connection diagnostics. V2Ray/Xray installation is removed.**
 All shipped menus, prompts, comments and documentation are English source text.
 
+Ubuntu 20.04 uses its distribution Python 3.8 and OpenVPN 2.4 packages.
+The server selects the supported cipher directive and key-generation syntax
+automatically. Exported profiles use AES-GCM negotiation compatible with OpenVPN 2.4+.
+
 ## Connections
 
 | Service | Default | Client requirements |
@@ -54,7 +58,7 @@ All shipped menus, prompts, comments and documentation are English source text.
 | WebSocket | TCP 80, `/ssh` | RFC 6455 binary frames; standard Upgrade headers and version 13 |
 | OpenVPN tunnel | TCP 80, `/openvpn` | HTTP/raw or framed WebSocket tunnel to OpenVPN TCP |
 | TLS | TCP 443 | TLS 1.2+ wrapping the HTTP/WebSocket tunnel; use `/ssh` or `/openvpn` after TLS |
-| OpenVPN direct | TCP 1194 | Modern OpenVPN 2.5+ client and exported profile; managed username/password |
+| OpenVPN direct | TCP 1194 | OpenVPN 2.4+ client and exported profile; managed username/password |
 | Squid | TCP 3128 | Allowed source IP; CONNECT destination `127.0.0.1:2222` or configured local VPN port |
 | Online API | TCP 81 | `/server/online_app`, `/server/online`, `/online`, `/health` |
 
@@ -142,7 +146,7 @@ docker build --build-arg DISTRO=debian:13 -f tests/Dockerfile -t vpnmanager-test
 docker run --rm vpnmanager-test
 ```
 
-CI covers Ubuntu 22.04/24.04 and Debian 12/13. Container tests exercise real SSH/PAM
+CI covers Ubuntu 20.04/22.04/24.04 and Debian 12/13. Container tests exercise real SSH/PAM
 login and forwarding, online counting, expired-session disconnection, real Squid
 CONNECT and deny rules, TLS daemon startup, OpenVPN PKI/profile generation and tunnel
 binary data transfer. Container tests substitute systemctl/sysctl; they do not prove

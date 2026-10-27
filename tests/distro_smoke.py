@@ -92,6 +92,10 @@ with patch.object(manager, 'run', side_effect=run):
         exported = Path('/tmp/client.ovpn').read_text()
         assert 'PRIVATE KEY' not in exported
         assert '<ca>' in exported and 'auth-user-pass' in exported
+        # Ask the installed OpenVPN to parse both generated configurations.
+        # This rejects version-incompatible options without needing a TUN device.
+        subprocess.run(['openvpn', '--cd', '/etc/openvpn/server', '--config', 'vpnmanager.conf', '--show-ciphers'], check=True, stdout=subprocess.DEVNULL)
+        subprocess.run(['openvpn', '--config', '/tmp/client.ovpn', '--show-ciphers'], check=True, stdout=subprocess.DEVNULL)
         # PAM account expiry is enforced and the periodic job terminates sessions.
         subprocess.run(['chage', '-E', '2000-01-01', 'vpntest'], check=True)
         manager.expire_portable()

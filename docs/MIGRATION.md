@@ -6,7 +6,7 @@ This rewrite does not execute, import or uninstall those components automaticall
 Keep the old VPS available until replacement connections have been verified.
 
 1. Privately back up your original configuration and account inventory.
-2. Install this repository on a fresh Ubuntu 22.04/24.04 or Debian 12/13 VPS.
+2. Install this repository on a fresh Ubuntu 20.04/22.04/24.04 or Debian 12/13 VPS.
 3. Configure only the services and ports your clients require.
 4. Recreate accounts using new passwords and the desired expiry dates.
 5. Install your domain certificate, verify DNS/firewalls, and export new profiles.

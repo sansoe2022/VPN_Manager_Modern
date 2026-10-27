@@ -59,6 +59,18 @@ sshd-auth: unknown [net]
             self.assertEqual(result['total'], 1)
             self.assertEqual(result['users']['ssh'], ['alice'])
 
+    def test_openvpn_distribution_versions(self):
+        for banner, expected in [('OpenVPN 2.4.7 x86_64-linux-gnu', (2, 4)),
+                                 ('OpenVPN 2.6.14 x86_64-pc-linux-gnu', (2, 6))]:
+            with patch.object(manager, 'capture', return_value=banner):
+                self.assertEqual(manager.openvpn_version(), expected)
+        self.assertEqual(manager.openvpn_ciphers((2, 4)), 'ncp-ciphers AES-256-GCM:AES-128-GCM')
+        self.assertTrue(manager.openvpn_ciphers((2, 5)).startswith('data-ciphers '))
+        for banner in ('OpenVPN 2.3.18', 'unexpected output'):
+            with patch.object(manager, 'capture', return_value=banner):
+                with self.assertRaises(ValueError):
+                    manager.openvpn_version()
+
     def test_api_legacy_schema(self):
         server = online.ThreadingHTTPServer(('127.0.0.1', 0), online.Handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
