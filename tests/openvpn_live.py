@@ -22,6 +22,8 @@ ADAPTER_PORT = 18081
 SSH_ADAPTER_PORT = 18082
 
 DOUBLE_HEADER = b'CONNECT / HTTP/1.1\r\nHost: dl.dir.freefiremobile.com\r\n\r\nCF-RAY / HTTP/1.1\r\nHost: vpn.example.com\r\nUpgrade: Mozilla/5.0\r\n\r\n'
+GET_PATCH = b'GET http://help.twitter.com/ HTTP/1.1\r\nHost: help.twitter.com\r\nUser-Agent: Test-UA\r\n\r\nPATCH / HTTP/1.1\r\nHost: vpn.example.com\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n'
+
 
 
 async def from_ws(reader, writer):
@@ -55,10 +57,12 @@ async def adapter(reader, writer, mode):
     tasks = []
     try:
         context = ssl.create_default_context(cafile='/etc/vpnmanager/tls.crt') if mode == 'ssl' else None
-        number = 443 if mode == 'ssl' else SSH_PROXY_PORT if mode == 'ssh' else PROXY_PORT
+        number = 443 if mode == 'ssl' else SSH_PROXY_PORT if mode in ('ssh','ssh-patch') else PROXY_PORT
         upstream, remote = await asyncio.open_connection('127.0.0.1', number, ssl=context,
             server_hostname='VPN-Manager' if context else None)
-        if mode in ('double-header', 'ssh'):
+        if mode in ('get-patch', 'ssh-patch'):
+            request = GET_PATCH
+        elif mode in ('double-header', 'ssh'):
             request = DOUBLE_HEADER
         elif mode == 'legacy':
             request = b'GET /carrier-payload HTTP/1.1\r\nHost: example.com\r\nX-Real-Host: 0.0.0.0:1194\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n'
@@ -145,7 +149,7 @@ async def main():
     ssh_log = open('/tmp/live-ssh.log', 'w')
     sshd = subprocess.Popen(['/usr/sbin/sshd', '-D', '-e', '-f', '/etc/vpnmanager/sshd_config'], stdout=ssh_log, stderr=subprocess.STDOUT)
     tls = subprocess.Popen(['/usr/bin/stunnel', '/etc/vpnmanager/stunnel.conf'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    ssh_bridge = await asyncio.start_server(lambda r, w: adapter(r, w, 'ssh'), '127.0.0.1', SSH_ADAPTER_PORT)
+    ssh_bridge = await asyncio.start_server(lambda r, w: adapter(r, w, 'ssh-patch'), '127.0.0.1', SSH_ADAPTER_PORT)
     ssh_client = None
     client = None
     try:
@@ -156,11 +160,11 @@ async def main():
         for _ in range(40):
             await asyncio.sleep(.1)
             if 'vpnhandshake' in online.collect()['users']['ssh']:
-                print('PASS real SSH password authentication through WS 2086 and user double-header payload', flush=True)
+                print('PASS real SSH password authentication through WS 2086 and user absolute GET + PATCH payload', flush=True)
                 break
         else:
             raise AssertionError('SSH WebSocket password login failed')
-        for mode in ('direct', 'legacy', 'connect', 'websocket', 'http-proxy', 'double-header', 'ssl'):
+        for mode in ('direct', 'legacy', 'connect', 'websocket', 'http-proxy', 'double-header', 'get-patch', 'ssl'):
             bridge = None
             if mode not in ('direct', 'http-proxy'):
                 bridge = await asyncio.start_server(lambda r, w: adapter(r, w, mode), '127.0.0.1', ADAPTER_PORT)

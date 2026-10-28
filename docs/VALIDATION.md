@@ -136,3 +136,17 @@ SIGTERM to the entire supervisor/child process group, matching systemd's default
 control-group stop, and requires supervisor exit 0 instead of 241. The actual
 service start/polling state is simulated; native QUIC, shared-account checks and
 process-group signal delivery are real.
+
+The carrier/lifecycle changes have 70 unit checks: fragmented absolute GET + PATCH,
+standard raw HTTP methods, preserved binary bytes, RFC frames, and atomic core
+replacement while the previous executable is running (including failed downloads).
+Native SSH WebSocket 2086 and OpenVPN WebSocket 8880 both connect using the supplied
+GET/PATCH payload; the prior CONNECT/CF-RAY, direct, TLS and framed WS modes remain
+covered. The UDP test uses the official unmodified v1.3.5 client against the patched
+server, hops source/destination ports at 8-second intervals and verifies two users
+behind the same IP. Abruptly killing one client releases only that account's online
+entry and limiter slot; the other stays connected. A normal 20-second-idle client
+stays live with keepalives past the server's 15-second bound, then its slot clears
+automatically after abrupt termination. Shared limit, password change and expiry
+checks continue afterward. New static amd64/arm64 server assets have pinned hashes;
+ARM64 is cross-compiled rather than natively exercised.

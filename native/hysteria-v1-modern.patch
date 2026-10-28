@@ -1,0 +1,123 @@
+--- a/core/cs/server.go
++++ b/core/cs/server.go
+@@ -6,6 +6,7 @@
+ 	"errors"
+ 	"fmt"
+ 	"net"
++	"sync/atomic"
+ 
+ 	"github.com/apernet/hysteria/core/congestion"
+ 
+@@ -30,6 +31,19 @@
+ 	Tx(auth string, n int)
+ 	IncConn(auth string) // increase connection count
+ 	DecConn(auth string) // decrease connection count
++}
++
++// Each accepted QUIC connection has its own opaque admission identity, even
++// when a client reuses the same UDP socket for multiple QUIC connections.
++var nextAdmissionID atomic.Uint64
++
++type admissionAddr struct {
++    net.Addr
++    id uint64
++}
++
++func (a admissionAddr) String() string {
++    return fmt.Sprintf("%s#%016x", a.Addr.String(), a.id)
+ }
+ 
+ type Server struct {
+@@ -110,7 +124,8 @@
+ 		return
+ 	}
+ 	// Handle the control stream
+-	auth, ok, err := s.handleControlStream(cc, stream)
++	addr := admissionAddr{Addr: cc.RemoteAddr(), id: nextAdmissionID.Add(1)} // Stable across QUIC migration.
++	auth, ok, err := s.handleControlStream(cc, stream, addr)
+ 	if err != nil {
+ 		_ = qErrorProtocol.Send(cc)
+ 		return
+@@ -125,11 +140,11 @@
+ 		s.trafficCounter)
+ 	err = sc.Run()
+ 	_ = qErrorGeneric.Send(cc)
+-	s.disconnectFunc(cc.RemoteAddr(), auth, err)
++	s.disconnectFunc(addr, auth, err)
+ }
+ 
+ // Auth & negotiate speed
+-func (s *Server) handleControlStream(cc quic.Connection, stream quic.Stream) ([]byte, bool, error) {
++func (s *Server) handleControlStream(cc quic.Connection, stream quic.Stream, addr net.Addr) ([]byte, bool, error) {
+ 	// Check version
+ 	vb := make([]byte, 1)
+ 	_, err := stream.Read(vb)
+@@ -157,7 +172,7 @@
+ 		serverRecvBPS = s.recvBPS
+ 	}
+ 	// Auth
+-	ok, msg := s.connectFunc(cc.RemoteAddr(), ch.Auth, serverSendBPS, serverRecvBPS)
++	ok, msg := s.connectFunc(addr, ch.Auth, serverSendBPS, serverRecvBPS)
+ 	// Response
+ 	err = struc.Pack(stream, &serverHello{
+ 		OK: ok,
+@@ -168,6 +183,9 @@
+ 		Message: msg,
+ 	})
+ 	if err != nil {
++		if ok {
++			s.disconnectFunc(addr, ch.Auth, err) // Release accepted auth even if the hello write failed.
++		}
+ 		return nil, false, err
+ 	}
+ 	// Set the congestion accordingly
+--- a/app/cmd/config.go
++++ b/app/cmd/config.go
+@@ -23,7 +23,7 @@
+ 
+ 	DefaultMMDBFilename = "GeoLite2-Country.mmdb"
+ 
+-	ServerMaxIdleTimeoutSec     = 60
++	ServerMaxIdleTimeoutSec     = 15
+ 	DefaultClientIdleTimeoutSec = 20
+ 
+ 	DefaultClientHopIntervalSec = 10
+@@ -62,6 +62,7 @@
+ 	ReceiveWindowConn   uint64 `json:"recv_window_conn"`
+ 	ReceiveWindowClient uint64 `json:"recv_window_client"`
+ 	MaxConnClient       int    `json:"max_conn_client"`
++	IdleTimeout         int    `json:"idle_timeout"`
+ 	DisableMTUDiscovery bool   `json:"disable_mtu_discovery"`
+ 	Resolver            string `json:"resolver"`
+ 	ResolvePreference   string `json:"resolve_preference"`
+@@ -98,6 +99,9 @@
+ }
+ 
+ func (c *serverConfig) Check() error {
++	if c.IdleTimeout != 0 && (c.IdleTimeout < 4 || c.IdleTimeout > 120) {
++		return errors.New("server idle timeout must be between 4 and 120 seconds")
++	}
+ 	if len(c.Listen) == 0 {
+ 		return errors.New("missing listen address")
+ 	}
+@@ -121,6 +125,9 @@
+ }
+ 
+ func (c *serverConfig) Fill() {
++	if c.IdleTimeout == 0 {
++		c.IdleTimeout = ServerMaxIdleTimeoutSec
++	}
+ 	if len(c.ALPN) == 0 {
+ 		c.ALPN = DefaultALPN
+ 	}
+--- a/app/cmd/server.go
++++ b/app/cmd/server.go
+@@ -82,7 +82,7 @@
+ 		InitialConnectionReceiveWindow: config.ReceiveWindowClient,
+ 		MaxConnectionReceiveWindow:     config.ReceiveWindowClient,
+ 		MaxIncomingStreams:             int64(config.MaxConnClient),
+-		MaxIdleTimeout:                 ServerMaxIdleTimeoutSec * time.Second,
++		MaxIdleTimeout:                 time.Duration(config.IdleTimeout) * time.Second,
+ 		KeepAlivePeriod:                0, // Keep alive should solely be client's responsibility
+ 		DisablePathMTUDiscovery:        config.DisableMTUDiscovery,
+ 		EnableDatagrams:                true,

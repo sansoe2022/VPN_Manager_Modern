@@ -817,6 +817,7 @@ class Classic:
             print('Obfuscation: ' + (config.get('udp_obfs') or 'svpn'))
             print('Port hopping: ' + config.get('udp_port_range', '10000-65000'))
             print('SVPN auth_str / [user] must contain username:password, not username alone.')
+            print('Core: ' + config.get('udp_core_version', 'legacy') + '; idle disconnect: ' + str(config.get('udp_idle_timeout', 15)) + 's')
             print('SNI: ' + config.get('udp_server_name', config.get('endpoint', '')))
             print('CA certificate: /etc/vpnmanager/udp-ca.crt')
         return action

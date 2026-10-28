@@ -425,3 +425,35 @@ sudo systemctl status vpnmanager-udp --no-pager
 sudo journalctl -u vpnmanager-udp --since '-2 minutes' -n 80 --no-pager
 sudo ss -H -lun 'sport = :36712'
 ```
+
+## Pipelined carrier payloads and UDP port-hopping cleanup
+
+The raw HTTP proxy accepts GET/CONNECT/CF-RAY/PATCH/POST/PUT/HEAD/OPTIONS/DELETE
+carrier requests. It strips up to four additional HTTP header blocks before native
+SSH/OpenVPN bytes, including this absolute-GET followed by PATCH handshake:
+
+```text
+GET http://help.twitter.com/ HTTP/1.1[crlf]Host: help.twitter.com[crlf]User-Agent: [ua][crlf][crlf]PATCH / HTTP/1.1[crlf]Host: [host][crlf]Connection: Upgrade[crlf]Upgrade: websocket[crlf][crlf]
+```
+
+Use your VPS SSH WebSocket port (for example 2086) or OpenVPN WebSocket port (8880)
+as the actual proxy. Carrier Host/URL fields do not make the server connect to that
+website. The selected listener retains its fixed local backend. RFC 6455 requests
+with a WebSocket key still use GET and version 13; their frames are not stripped.
+Malformed/oversized or excessive header blocks are rejected. Actual carrier/ISP
+acceptance is separate from parsing and transporting the payload on this server.
+
+UDP installs `v1.3.5-modern.1`, a reproducible patched Hysteria v1 core. QUIC port
+hopping used to change the remote address reported on disconnect, leaving the
+original online/admission key behind. The core now uses an address plus unique connection ID as the same stable identity
+for both lifecycle callbacks and releases accepted auth if the hello write fails.
+Multiple users behind one IP are kept separate. No credential/CA/private key changes
+are needed. Existing cores are upgraded atomically and UDP restarts once on update.
+See [native patch and build instructions](../native/README.md).
+
+A client sending QUIC CLOSE releases its slot on that event. If an app/network
+vanishes without CLOSE, the negotiated idle timeout releases it automatically;
+the server default is 15 seconds. Live connections with client keepalives are not
+expired by a fixed lease. There is no need to toggle the limiter, change limits
+or reboot to recover a normal disconnected UDP slot. Menu 10 → 09 → 03 shows the
+installed core version and configured timeout.

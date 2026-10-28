@@ -34,6 +34,7 @@ The banner separates TCP/UDP ports, shows API links and green ON/red OFF states.
 User lists use narrow-screen cards. IP/domain prompts default to the
 current detected VPS IP. Menu source and launchers are unencrypted.
 
+UDP uses a patched v1 core to release limiter slots correctly after port hopping; default idle timeout is 15 seconds.
 UDP supports `svpn` obfuscation and port hopping `10000–65000 → 36712` (or your configured backend port). Use `username:password` for client authentication.
 UDP restore updates SNI/certificate names to the chosen current IP/DNS while preserving its CA/keys.
 OpenVPN keeps the original shared keys. Full backups include source, keys, managed

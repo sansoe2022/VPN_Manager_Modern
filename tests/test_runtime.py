@@ -175,6 +175,31 @@ class Tunnel(unittest.IsolatedAsyncioTestCase):
             writer.close()
             await writer.wait_closed()
 
+    async def test_absolute_get_patch_payload_is_stripped_even_when_fragmented(self):
+        first = b'GET http://help.twitter.com/ HTTP/1.1\r\nHost: help.twitter.com\r\nUser-Agent: Test-UA\r\n\r\n'
+        second = b'PATCH / HTTP/1.1\r\nHost: vpn.example.com\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n'
+        for split in (False, True):
+            reader, writer = await self.connect()
+            data = b'\x00\xffVPN bytes including GET / HTTP/1.1\r\n\r\n'
+            writer.write(first + (b'' if split else second + data))
+            await writer.drain()
+            self.assertIn(b'101 Switching', await reader.readuntil(b'\r\n\r\n'))
+            if split:
+                for part in (second[:1],second[1:4],second[4:30],second[30:] + data):
+                    writer.write(part); await writer.drain(); await asyncio.sleep(.01)
+            self.assertEqual(await asyncio.wait_for(reader.readexactly(len(data)),2), data)
+            writer.close(); await writer.wait_closed()
+
+    async def test_raw_http_methods_support_carrier_prefaces(self):
+        for method in ('GET','POST','PATCH','PUT','HEAD','OPTIONS','DELETE'):
+            reader, writer = await self.connect()
+            data = b'SSH-2.0-native-bytes\r\n'
+            writer.write((method+' / HTTP/1.1\r\nHost: carrier.example\r\nUpgrade: websocket\r\n\r\n').encode()+data)
+            await writer.drain()
+            await reader.readuntil(b'\r\n\r\n')
+            self.assertEqual(await asyncio.wait_for(reader.readexactly(len(data)),2),data)
+            writer.close(); await writer.wait_closed()
+
     async def test_connect_root_preserves_raw_binary_without_extra_header(self):
         reader, writer = await self.connect()
         data = b'\x00\x38\x38\x00\xffbinary'

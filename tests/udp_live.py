@@ -16,6 +16,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'vpnmanager'))
 import manager
+import admission
 import online
 import udp_runtime
 
@@ -39,8 +40,9 @@ def start(name, config):
 with patch.object(manager, 'run', side_effect=run), patch.object(manager, 'start', side_effect=start):
     manager.initialize()
     config = manager.load()
-    config.update(endpoint=os.environ.get('UDP_TEST_ENDPOINT','localhost'), checkuser=True)
+    config.update(endpoint=os.environ.get('UDP_TEST_ENDPOINT','localhost'), checkuser=True, limiter_enabled=True)
     manager.create_user('a', 1, secret='1')
+    manager.create_user('b', 1, secret='1')
     udp_runtime.configure(manager, config, 36712)
 
 class TCP(socketserver.BaseRequestHandler):
@@ -61,16 +63,20 @@ for service in (tcp, udp):
 server_log = open('/tmp/udp-server.log', 'w')
 server = subprocess.Popen(['python3', '/usr/local/lib/vpnmanager/manager.py', 'serve-udp'], stdout=server_log, stderr=subprocess.STDOUT, start_new_session=True)
 client = None
+client_b = None
+CLIENT = Path('/tmp/hysteria-client-official') if Path('/tmp/hysteria-client-official').exists() else udp_runtime.BINARY
 
-def connect(password):
+def connect(password, user="a"):
+    offset=10 if user=="b" else 0
     data = {'server':'127.0.0.1:10000-50000', 'server_name':config['endpoint'], 'protocol':'udp', 'up_mbps':10, 'down_mbps':10,
-            'auth_str':'a:' + password, 'obfs':'svpn', 'ca':'/etc/vpnmanager/udp-ca.crt',
-            'quit_on_disconnect':True, 'retry':0, 'handshake_timeout':3, 'idle_timeout':4,
-            'relay_tcp':{'listen':'127.0.0.1:9000','remote':'127.0.0.1:9001'},
-            'relay_udp':{'listen':'127.0.0.1:9003','remote':'127.0.0.1:9002'}}
-    manager.write('/tmp/udp-client.json', json.dumps(data))
+            'auth_str':user + ':' + password, 'obfs':'svpn', 'ca':'/etc/vpnmanager/udp-ca.crt',
+            'hop_interval':8, 'quit_on_disconnect':True, 'retry':0, 'handshake_timeout':3, 'idle_timeout':20 if user=='b' else 4,
+            'relay_tcp':{'listen':'127.0.0.1:'+str(9000+offset),'remote':'127.0.0.1:9001'},
+            'relay_udp':{'listen':'127.0.0.1:'+str(9003+offset),'remote':'127.0.0.1:9002'}}
+    filename='/tmp/udp-client-'+user+'.json'
+    manager.write(filename, json.dumps(data))
     output = open('/tmp/udp-client.log', 'w')
-    process = subprocess.Popen([str(udp_runtime.BINARY), '--no-check', '--log-level', 'info', 'client', '-c', '/tmp/udp-client.json'],stdout=output,stderr=subprocess.STDOUT)
+    process = subprocess.Popen([str(CLIENT), '--no-check', '--log-level', 'info', 'client', '-c', filename],stdout=output,stderr=subprocess.STDOUT)
     output.close()
     return process
 
@@ -99,6 +105,12 @@ try:
         connection.settimeout(5)
         connection.sendto(b'native-udp-relay', ('127.0.0.1',9003))
         assert connection.recv(4096) == b'native-udp-relay'
+    # Change both source and destination UDP ports repeatedly before disconnect.
+    before=manager.capture('ss','-H','-uanp')
+    time.sleep(9)
+    after=manager.capture('ss','-H','-uanp')
+    owned=lambda output:{line.split()[3] for line in output.splitlines() if 'pid='+str(client.pid)+',' in line}
+    assert owned(before)!=owned(after), 'Native UDP client did not hop its source port'
     assert online.collect()['total'] == 1
     api=online.ThreadingHTTPServer(('127.0.0.1',0),online.Handler)
     api_thread=threading.Thread(target=api.serve_forever,daemon=True); api_thread.start()
@@ -111,11 +123,35 @@ try:
         print('PASS real CheckUser API with Unix password authentication and only three requested fields',flush=True)
     finally: api.shutdown(); api.server_close(); api_thread.join()
     print('PASS shared one-character user/password, verified TLS, real TCP/UDP relay and unified online count', flush=True)
-    client.terminate(); client.wait(timeout=5)
+    client_b=connect('1', 'b')
+    for _ in range(60):
+        time.sleep(.1)
+        if sorted(udp_runtime.sessions())==['a','b']: break
+    assert sorted(udp_runtime.sessions())==['a','b'], 'Second account behind the same IP failed'
+    keys=json.loads(udp_runtime.STATE.read_text())['connections']
+    assert len({key.rsplit('#',1)[1] for key in keys})==2, 'Native sessions have no distinct stable connection IDs'
+    time.sleep(9)  # Both clients have migrated while remaining authenticated.
+    client.kill(); client.wait(timeout=5)  # Abrupt application termination, no QUIC CLOSE.
     for _ in range(100):
+        time.sleep(.1)
+        if udp_runtime.sessions()==['b']: break
+    assert udp_runtime.sessions()==['b'], 'Migration cleanup removed the wrong account or left the dead one'
+    assert client_b.poll() is None
+    with admission.ledger() as rows:
+        assert not any(key.startswith('udp:') and row['user']=='a' for key,row in rows.items())
+        assert any(key.startswith('udp:') and row['user']=='b' for key,row in rows.items())
+    time.sleep(4)  # A normal 20s-idle client remains live past the server's 15s idle bound.
+    assert udp_runtime.sessions()==['b'] and client_b.poll() is None
+    closed=time.monotonic()
+    client_b.kill(); client_b.wait(timeout=5)
+    for _ in range(200):
         time.sleep(.1)
         if not udp_runtime.sessions(): break
     assert not udp_runtime.sessions(), 'Disconnected UDP session remains online'
+    assert time.monotonic()-closed < 20, 'Server did not enforce its negotiated idle bound'
+    with admission.ledger() as rows:
+        assert not any(key.startswith('udp:') and row['user']=='a' for key,row in rows.items()), 'UDP admission slot remains occupied after disconnect'
+    print('PASS actual source-port migration, 1/1 to 0/1 cleanup and shared limiter slot release',flush=True)
     manager.set_password('a', '2')
     client = connect('1')
     client.wait(timeout=8)
@@ -143,7 +179,7 @@ except BaseException:
     raise
 finally:
     subprocess.run(['iptables','-t','nat','-D','OUTPUT','-p','udp','-d','127.0.0.1','-j','VPNMANAGER_UDP'],check=False)
-    for process in (client, server):
+    for process in (client, client_b, server):
         if process and process.poll() is None:
             if process is server:
                 os.killpg(process.pid, signal.SIGTERM)

@@ -1,5 +1,6 @@
 """Hysteria v1 integration with the manager's accounts and shared online totals."""
 import base64
+import hashlib
 import json
 import os
 import ipaddress
@@ -21,8 +22,11 @@ import downloads
 BINARY = Path('/usr/local/lib/vpnmanager/bin/hysteria')
 CONFIG = Path('/etc/vpnmanager/udp.json')
 STATE = Path('/run/vpnmanager/udp-sessions.json')
-HASHES = {'amd64': '41dc8bc3fff6fc1f031666eb294f10b481b80b66229d7c6aca88398d0fba839d',
-          'arm64': '702cd2f3f7bb1d00d463ece4547b6a80de85aa4f6fa8fd1dc7ebd87eb0e2c7b9'}
+CORE_VERSION = 'v1.3.5-modern.1'
+CORE_URL = 'https://github.com/sansoe2022/VPN_Manager_Modern/releases/download/udp-core-' + CORE_VERSION
+HASHES = {'amd64': '7ee32d3babee7465e4afba766216abbd199cf33cf2356e95eaa3006379810d11',
+          'arm64': 'b1d2e2462fd8b97c8768a379305bb9b0517bf2780ad7f17733763212bcecb448'}
+
 
 
 def identity(pid):
@@ -124,19 +128,27 @@ def configure(m, config, number):
     arch = {'x86_64': 'amd64', 'aarch64': 'arm64'}.get(platform.machine())
     if arch not in HASHES:
         raise ValueError('UDP integration currently supports amd64 and arm64.')
-    if not BINARY.exists():
-        print('[1/3] Downloading Hysteria v1.3.5 (no license key)...', flush=True)
-        downloads.fetch(f'https://github.com/apernet/hysteria/releases/download/v1.3.5/hysteria-linux-{arch}', BINARY, 64 * 1024 * 1024, HASHES[arch])
-        BINARY.chmod(0o755)
+    digest = hashlib.sha256(BINARY.read_bytes()).hexdigest() if BINARY.exists() else None
+    if digest != HASHES[arch]:
+        print('[1/3] Downloading Hysteria ' + CORE_VERSION + ' (stable port-hopping identity)...', flush=True)
+        candidate = BINARY.with_suffix('.download')
+        downloads.fetch(f'{CORE_URL}/hysteria-linux-{arch}', candidate, 64 * 1024 * 1024, HASHES[arch])
+        candidate.chmod(0o755)
+        os.replace(candidate, BINARY)  # Preserve the running old inode until restart.
+    idle = int(config.get('udp_idle_timeout', 15))
+    if not 4 <= idle <= 120:
+        raise ValueError('UDP idle timeout must be between 4 and 120 seconds.')
     endpoint = m.endpoint(config['endpoint'])
     cert, key = certificates(m, endpoint)
-    data = {'listen': f'{config.get("host", "0.0.0.0")}:{number}', 'protocol': 'udp', 'cert': str(cert), 'key': str(key),
+    data = {'listen': f'{config.get("host", "0.0.0.0")}:{number}', 'protocol': 'udp', 'idle_timeout': idle, 'cert': str(cert), 'key': str(key),
             'up_mbps': config.get('udp_up_mbps', 100), 'down_mbps': config.get('udp_down_mbps', 100),
             'obfs': config.get('udp_obfs') or 'svpn', 'auth': {'mode': 'external', 'config': {}}}
     m.write(CONFIG, json.dumps(data, indent=2))
     print('[2/3] Configuring shared account authentication...', flush=True)
     config['udp_obfs'] = data['obfs']
     config.setdefault('udp_port_range', '10000-65000')
+    config['udp_idle_timeout'] = idle
+    config['udp_core_version'] = CORE_VERSION
     config['udp_port'] = number
     config['udp_server_name'] = endpoint
     m.save(config)

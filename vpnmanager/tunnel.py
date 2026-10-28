@@ -40,25 +40,38 @@ async def relay(reader, writer):
         await writer.drain()
 
 
+RAW_METHODS = ('GET', 'CONNECT', 'CF-RAY', 'PATCH', 'POST', 'PUT', 'HEAD', 'OPTIONS', 'DELETE')
+
+
 async def legacy_relay(reader, writer):
-    """Consume the extra CF-RAY preface in legacy CONNECT / app payloads."""
-    marker = b'CF-RAY '
-    prefix = b''
-    while len(prefix) < len(marker):
-        part = await reader.read(1)
-        if not part:
-            return
-        prefix += part
-        if not marker.startswith(prefix):
-            writer.write(prefix)
-            await writer.drain()
-            await relay(reader, writer)
-            return
-    rest = await asyncio.wait_for(reader.readuntil(b'\r\n\r\n'), 10)
-    header = prefix + rest
-    if len(header) > 16384 or not re.fullmatch(rb'CF-RAY /[^\r\n ]* HTTP/1\.[01]', header.split(b'\r\n', 1)[0]):
-        raise ValueError('Invalid legacy CF-RAY preface')
-    await relay(reader, writer)
+    """Strip bounded pipelined carrier headers, preserving the first native data byte."""
+    markers = tuple((method + ' ').encode() for method in RAW_METHODS)
+    count, total = 0, 0
+    while True:
+        prefix = b''
+        while prefix not in markers:
+            part = await reader.read(1) if not prefix else await asyncio.wait_for(reader.read(1), 10)
+            if not part:
+                if prefix:
+                    writer.write(prefix)
+                    await writer.drain()
+                return
+            prefix += part
+            if not any(marker.startswith(prefix) for marker in markers):
+                writer.write(prefix)
+                await writer.drain()
+                await relay(reader, writer)
+                return
+        count += 1
+        if count > 4:
+            raise ValueError('Too many carrier request headers')
+        rest = await asyncio.wait_for(reader.readuntil(b'\r\n\r\n'), 10)
+        header = prefix + rest
+        total += len(header)
+        if len(header) > 16384 or total > 32768 or not re.fullmatch(rb'[A-Z-]+ [^\r\n ]+ HTTP/1\.[01]', header.split(b'\r\n', 1)[0]):
+            raise ValueError('Invalid carrier request header')
+        # These headers select no destinations and produce no extra HTTP responses.
+        # The listener's already-validated local SSH/OpenVPN route stays fixed.
 
 
 async def ws_to_tcp(reader, target, client):
@@ -138,13 +151,13 @@ async def handle(reader, writer, backends):
                 headers[key.lower()] = value.strip()
         # Legacy destination headers are limited to configured SSH/OpenVPN backends.
         backend = select_backend(method, path, headers, backends)
-        if method not in ('GET', 'CONNECT', 'CF-RAY') or not version.startswith('HTTP/1.') or backend is None:
+        if method not in RAW_METHODS or not version.startswith('HTTP/1.') or backend is None:
             writer.write(b'HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n')
             await writer.drain()
             return
         key = headers.get('sec-websocket-key')
         if key:
-            if (len(base64.b64decode(key, validate=True)) != 16
+            if (method != 'GET' or len(base64.b64decode(key, validate=True)) != 16
                     or headers.get('sec-websocket-version') != '13'
                     or headers.get('upgrade', '').lower() != 'websocket'
                     or 'upgrade' not in headers.get('connection', '').lower()):
@@ -166,7 +179,7 @@ async def handle(reader, writer, backends):
         if key:
             tasks = [asyncio.create_task(ws_to_tcp(reader, target, writer)), asyncio.create_task(tcp_to_ws(upstream, writer))]
         else:
-            incoming = legacy_relay(reader, target) if method == 'CONNECT' and path == '/' else relay(reader, target)
+            incoming = legacy_relay(reader, target)
             tasks = [asyncio.create_task(incoming), asyncio.create_task(relay(upstream, writer))]
         done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for task in done:

@@ -3,10 +3,12 @@ import hashlib
 import io
 from pathlib import Path
 import subprocess
+import shutil
 import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'vpnmanager'))
 import udp_runtime
@@ -18,6 +20,34 @@ core=SimpleNamespace(run=run,capture=lambda *args:run(*args).stdout.strip())
 
 
 class UDPIdentity(unittest.TestCase):
+    def test_upgrade_of_running_binary_is_atomic_and_failed_download_preserves_it(self):
+        for fail in (False, True):
+            with self.subTest(fail=fail), tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()):
+                root=Path(directory); binary=root/'sleep'
+                shutil.copy2('/bin/sleep',binary)
+                original=binary.read_bytes(); replacement=Path('/bin/true').read_bytes()
+                child=subprocess.Popen(['sleep','30'], executable=str(binary))
+                def fetch(url,path,limit,digest):
+                    if fail: raise ValueError('Download failed')
+                    Path(path).write_bytes(replacement)
+                core=SimpleNamespace(port=int,endpoint=lambda value:value,save=lambda config:None,
+                    write=lambda path,text:Path(path).write_text(text),service_unit=lambda *args:None,start=lambda *args:None)
+                config={'enabled':['udp'],'udp_port':36712,'endpoint':'127.0.0.1'}
+                try:
+                    with patch.object(udp_runtime,'BINARY',binary), patch.object(udp_runtime,'CONFIG',root/'udp.json'), \
+                         patch.object(udp_runtime,'HASHES',{'amd64':hashlib.sha256(replacement).hexdigest()}), \
+                         patch.object(udp_runtime.platform,'machine',return_value='x86_64'), \
+                         patch.object(udp_runtime,'certificates',return_value=(root/'cert',root/'key')), \
+                         patch.object(udp_runtime.downloads,'fetch',side_effect=fetch):
+                        if fail:
+                            with self.assertRaisesRegex(ValueError,'Download failed'): udp_runtime.configure(core,config,36712)
+                        else:
+                            udp_runtime.configure(core,config,36712)
+                    self.assertEqual(binary.read_bytes(),original if fail else replacement)
+                    self.assertIsNone(child.poll())
+                finally:
+                    child.terminate(); child.wait(timeout=5)
+
     def test_endpoint_change_preserves_ca_and_keys_and_updates_ip_san(self):
         with tempfile.TemporaryDirectory() as directory,contextlib.redirect_stdout(io.StringIO()):
             root=Path(directory)
