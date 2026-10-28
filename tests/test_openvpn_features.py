@@ -31,9 +31,10 @@ class ShortCredentials(unittest.TestCase):
         for value in ('', 'a:b', 'a\nb', 'a\0b'):
             with self.assertRaises(ValueError):
                 manager.validate_password(value)
-        with patch.object(manager, 'run') as run:
+        with patch.object(manager, 'run') as run, patch.object(manager.accounts, 'update') as update:
             manager.set_password('a', '1')
         run.assert_called_once_with('chpasswd', '-c', 'SHA512', input='a:1\n')
+        update.assert_called_once_with('a', password='1')
 
 
 class SharedKeys(unittest.TestCase):

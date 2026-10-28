@@ -18,6 +18,11 @@ required on your own VPS and client networks:
 - Verify a config backup can be inspected and restored privately on a spare server.
 
 Record OS version, CPU architecture, OpenVPN/Squid/OpenSSH versions and test date.
+Test fresh-install/URL-restore choices on a real systemd VPS, save the encrypted
+backup and its password separately, and verify restored optional services after reboot.
+For UDP, check both TCP and UDP data through a Hysteria v1 client using the same
+SSH account, and compare its sessions with the shared online API.
+Test the selected x-ui installer/panel on its supported Ubuntu version.
 Local container verification uses amd64; ARM64 requires its own acceptance run.
 
 For the restored original menu, additionally verify:

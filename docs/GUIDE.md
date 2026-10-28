@@ -91,11 +91,13 @@ Connection mode (**10**) keeps the original order:
 [05] PROXY / WEBSOCKET
 [06] SSL TUNNEL
 [07] SSLH MULTIPLEX
+[08] X-UI PANEL
+[09] UDP / HYSTERIA
 [00] BACK TO MAIN MENU
 ```
 
 **10 → 00 returns directly to the main menu. It never exits the program.**
-The old **10 → 08 V2Ray** entry is absent; the other connection entries keep their numbers.
+The old standalone V2Ray installer remains removed. At the owner's request, **08** now installs x-ui and **09** configures UDP; entries 01–07 retain their numbers.
 
 ## First configuration
 
@@ -123,14 +125,14 @@ password SSH login. OpenVPN additionally requires `/dev/net/tun`.
   online monitor/report, expired-account cleanup, and per-user simultaneous limits.
   PAM rejects expired accounts; the expiry timer also locks and disconnects expired
   or locked sessions every minute. The optional limiter checks every 15 seconds and
-  disconnects an account exceeding its limit across SSH, Dropbear and OpenVPN.
+  disconnects an account exceeding its limit across SSH, Dropbear, OpenVPN and UDP.
   Forwarding accounts have no interactive shell; use SSH forwarding/no-session mode.
 - **Banner/traffic/optimization:** text or HTML SSH banner, network byte totals,
   package repair/cache cleanup, optional package upgrades and BBR when the host kernel supports it.
-- **Backup:** private configuration, PKI and managed-account password hashes/expiry/
-  metadata. Restore validates paths and account ownership, makes a pre-restore backup,
-  and never replaces the whole system passwd/shadow database. Archives are mode 600;
-  they are not published on a web server. Legacy `backup.vps` is a different format.
+- **Backup:** complete manager/application migration with source, keys, credentials,
+  optional service binaries and x-ui data. Menu 15 → 03 publishes an encrypted expiring
+  download; 15 → 02 restores from file/URL and activates services. Raw local archives
+  remain root-only. See [full migration](MIGRATION.md).
 - **Virtual memory:** creates/removes only `/var/lib/vpnmanager/swapfile`, with a
   corresponding fstab entry. Other swap devices/files are preserved.
 - **BadVPN Pro:** builds BadVPN UDPGW from the pinned upstream 1.999.130 source
@@ -292,3 +294,46 @@ IP/domain changes; old profiles with an old IP must be edited or exported again.
 
 Online App menu 19 → 04 updates `limite` immediately without a restart. It is the
 app's advertised capacity, separate from the per-user limiter in 06/17.
+
+## Branding, passwords and Squid
+
+The title is `VPN Manager Modern | make with Ai by sansoe`.
+Menu 09 displays the username and saved password alongside expiry/status/online
+counts. Passwords set from now on are retained in root-only account metadata;
+older hashed passwords cannot be recovered and show `(reset to display)` until reset
+using 07. The public online/CheckUser API never exposes these report passwords.
+Squid setup/stop/restart prints real operation stages, and allowed client CIDRs
+have a displayed saved default. IP/domain prompts offer the current detected VPS
+IP first and the saved endpoint if detection is unavailable.
+
+## UDP and x-ui
+
+**10 → 09** integrates Hysteria **v1.3.5**, matching the supplied UDP project.
+Its native binary comes from the pinned upstream release with a SHA-256 check;
+there is no install-key server/loader, second users database, Redis, or separate
+online web server. Create a user once in 01/02 (or a bot): SSH, OpenVPN and UDP
+use the same account. Hysteria v1 client auth is `username:password`; choose the
+configured UDP port (default 36712), obfuscation and saved SNI. Trust the server's
+`/etc/vpnmanager/udp-ca.crt` or install a certificate valid for your domain.
+
+The supervised daemon records successful authenticated QUIC connections and
+removes them on the server's disconnect event. Abruptly closed clients can remain
+counted until the negotiated QUIC idle timeout (commonly 20 seconds, up to 60).
+Its total is merged into menu 04, the banner, CheckUser and `/server/online[_app]`.
+Old `/udpserver/online[_app]` paths alias that same aggregate on the same web port.
+Passwords, locks, deletions and expiry use the shared Unix account data. With menu
+17 enabled, UDP admissions and combined limits use the same per-account limit.
+Hysteria v1 lacks a per-client disconnect control API: revoking an active UDP
+session restarts the UDP daemon, so other valid UDP clients may briefly reconnect.
+
+**10 → 08** installs x-ui using the requested Ubuntu mapping: the sansoe2022 fork
+on 20 and alireza0 on 24+. Ubuntu 22/Debian have no requested x-ui mapping and this
+optional installer reports that explicitly; all other manager features remain
+available. Installer source is pinned/checksummed; upstream release downloads keep
+TLS certificate verification enabled. x-ui retains its own panel/inbound settings,
+and its installation/database are included in full backups. The old separate
+V2Ray menu installer has not been reintroduced.
+
+Menu **11** uses a single-connection HTTPS bandwidth test (roughly 33 MB), showing
+HTTPS latency plus download/upload Mbps. If the primary server is unavailable,
+it attempts an OVH download-only fallback and labels upload as unavailable.

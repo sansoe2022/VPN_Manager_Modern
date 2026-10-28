@@ -29,7 +29,8 @@ is installed. Reseller revocation removes bot access; existing VPN accounts rema
 until the owner locks/removes them.
 
 A trial account's password is generated randomly, delivered to the requester, and
-not stored in plaintext on the server. Expiry is enforced by the manager's minute
+retained in root-only account metadata for the requested menu 09 report. It is
+included in private/encrypted backups. Expiry is enforced by the manager's minute
 expiry timer. Optional button themes and the original third-party bot's private
 wire formats are not reproduced; all supported commands are listed here.
 

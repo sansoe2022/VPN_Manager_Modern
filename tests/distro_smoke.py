@@ -193,7 +193,7 @@ with patch.object(manager, 'run', side_effect=run):
         accounts.update('vpntest', limit=77)
         for path in key_files:
             manager.write(path, 'replacement to simulate a different server state')
-        private_backup.restore(manager, snapshot)
+        private_backup.restore(manager, snapshot, activate=False)
         assert accounts.load()['vpntest']['limit'] == 1
         assert {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in key_files} == original_keys
         assert manager.capture('getent', 'shadow', 'root') == root_before

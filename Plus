@@ -2,7 +2,9 @@
 # Public GitHub bootstrap and local installer launcher. All source is readable.
 set -Eeuo pipefail
 if [[ ${1:-} == --help ]]; then
-  echo 'Install SSHPlus English: sudo bash Plus'
+  echo 'Install VPN Manager Modern: sudo bash Plus'
+  echo 'Fresh install: bash Plus --fresh'
+  echo 'Restore: bash Plus --restore-url URL [--password-file FILE] [--endpoint IP_OR_DOMAIN]'
   echo 'Source: https://github.com/sansoe2022/VPN_Manager_Modern'
   exit 0
 fi

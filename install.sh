@@ -18,6 +18,25 @@ if [[ -d /etc/SSHPlus || -d /etc/VPNManager ]]; then
 fi
 export DEBIAN_FRONTEND=noninteractive
 export LC_ALL=C.UTF-8
+restore_url=''
+restore_args=()
+if [[ ${1:-} == --restore-url ]]; then
+  [[ -n ${2:-} ]] || { echo '--restore-url requires an encrypted backup URL.' >&2; exit 1; }
+  restore_url=$2
+  shift 2
+  restore_args=("$@")
+elif [[ ${1:-} == --fresh ]]; then
+  shift
+elif [[ ! -f /etc/vpnmanager/config.json ]] && { : </dev/tty; } 2>/dev/null; then
+  printf '\nVPN Manager Modern\n1) Fresh installation\n2) Restore from encrypted backup URL\nSelect [1]: ' >/dev/tty
+  read -r install_mode </dev/tty
+  case ${install_mode:-1} in
+    1) ;;
+    2) printf 'Backup URL: ' >/dev/tty; read -r restore_url </dev/tty
+       [[ -n "$restore_url" ]] || { echo 'A backup URL is required.' >&2; exit 1; } ;;
+    *) echo 'Choose 1 or 2.' >&2; exit 1 ;;
+  esac
+fi
 apt-get -o Acquire::Retries=3 update
 apt-get -o Acquire::Retries=3 install -y --no-install-recommends python3 openssh-server openssl ca-certificates iproute2 procps squid stunnel4 openvpn easy-rsa iptables util-linux
 install -d -m 0755 /usr/local/lib/vpnmanager
@@ -39,10 +58,19 @@ for alias in menu vpnmenu; do
   ln -sfn /usr/local/bin/vpnmanager "/usr/local/bin/$alias"
 done
 vpnmanager initialize
-for service in vpnmanager-tunnel vpnmanager-online; do
-  if systemctl is-active --quiet "$service"; then
-    systemctl restart "$service"
+if [[ -n "$restore_url" ]]; then
+  if { : </dev/tty; } 2>/dev/null; then
+    vpnmanager restore "$restore_url" "${restore_args[@]}" </dev/tty
+  else
+    vpnmanager restore "$restore_url" "${restore_args[@]}"
   fi
-done
+fi
+if [[ -z "$restore_url" ]]; then
+  for service in vpnmanager-tunnel vpnmanager-online vpnmanager-udp; do
+    if systemctl is-active --quiet "$service"; then
+      systemctl restart "$service"
+    fi
+  done
+fi
 printf '\nInstallation complete. Run: sudo vpnmanager\n'
 printf 'Original SSHPlus numbering is restored. Connection mode: 10; back: 00; more: 22.\n'

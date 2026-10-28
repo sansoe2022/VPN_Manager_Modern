@@ -30,7 +30,7 @@ MORE_RIGHT = [('30', 'ROOT PASSWORD'), ('31', 'AUTO EXECUTION'), ('32', 'UPDATE 
               ('33', 'REMOVE SCRIPT'), ('34', 'RESELLER BOT'), ('35', 'BACK <<<'), ('00', 'EXIT <<<')]
 CONNECTIONS = [('01', 'OPENSSH'), ('02', 'SQUID PROXY'), ('03', 'DROPBEAR'),
                ('04', 'OPENVPN'), ('05', 'PROXY / WEBSOCKET'), ('06', 'SSL TUNNEL'),
-               ('07', 'SSLH MULTIPLEX'), ('00', 'BACK TO MAIN MENU')]
+               ('07', 'SSLH MULTIPLEX'), ('08', 'X-UI PANEL'), ('09', 'UDP / HYSTERIA'), ('00', 'BACK TO MAIN MENU')]
 
 
 def choice(value):
@@ -51,21 +51,24 @@ def listening_ports(output):
 def connection_ports(config, output):
     """Intersect real listeners with ports configured in Connection Mode."""
     allowed = {int(config[name + '_port']) for name in
-               ('squid', 'dropbear', 'openvpn', 'tls', 'sslh')
+               ('squid', 'dropbear', 'openvpn', 'tls', 'sslh', 'xui')
                if name in config.get('enabled', []) and config.get(name + '_port')}
     allowed.update(entry['port'] for entry in proxy_config.listeners(config))
     if config.get('ssh_bind') and config['ssh_bind'] not in ('127.0.0.1', '::1'):
         allowed.add(int(config['ssh_port']))
     listeners = listening_ports(output)
-    return {'tcp': listeners['tcp'] & allowed, 'udp': set()}
+    udp = {config['udp_port']} if 'udp' in config.get('enabled', []) and config.get('udp_port') else set()
+    return {'tcp': listeners['tcp'] & allowed, 'udp': listeners['udp'] & udp}
 
 
 def connection_services(config, output):
     """Describe only configured Connection Mode listeners, using their backend roles."""
     actual = connection_ports(config, output)
     result = {'tcp': [], 'udp': []}
+    if config.get('udp_port') in actual['udp']:
+        result['udp'].append(('Hysteria UDP', config['udp_port']))
     labels = {'squid': 'Squid Proxy', 'dropbear': 'Dropbear SSH', 'openvpn': 'OpenVPN',
-              'sslh': 'SSLH'}
+              'sslh': 'SSLH', 'xui': 'X-UI Panel'}
     for name, label in labels.items():
         number = config.get(name + '_port')
         if name in config.get('enabled', []) and number in actual['tcp']:
@@ -131,7 +134,7 @@ class Classic:
             date = 'Never'
         return record, expired, date, fields[1].startswith(('!', '*'))
 
-    def header(self, title='SSHPLUS MANAGER | Edit: @kiritosshxd'):
+    def header(self, title='VPN Manager Modern | make with Ai by sansoe'):
         self.clear()
         line = '=' * 47
         print(self.paint(line, '36'))
@@ -263,23 +266,24 @@ class Classic:
     def report(self, one=None):
         data = self.m.collect()
         counts = collections.Counter(name for values in data['users'].values() for name in values)
-        print(f'{"USER":<20}{"ONLINE/LIMIT":<16}{"EXPIRY":<20}STATUS')
+        print(f'{"USER":<20}{"PASSWORD":<24}{"ONLINE/LIMIT":<16}{"EXPIRY":<20}STATUS')
         for name in ([one] if one else sorted(self.m.users())):
             record, expired, expiry, locked = self.metadata(name)
             status = 'Expired' if expired else 'Locked' if locked else 'Active'
             connection = f'{counts[name]}/{record.get("limit", 1)}'
-            print(f'{name:<20}{connection:<16}{expiry:<20}{status}')
+            secret = record.get('password', '(reset to display)')
+            print(f'{name:<20}{secret:<24}{connection:<16}{expiry:<20}{status}')
 
     def monitor(self):
         data = self.m.collect()
         per_protocol = {protocol: collections.Counter(names) for protocol, names in data['users'].items()}
-        print(f'{"USER":<20}{"STATUS":<10}{"SSH":>5}{"DROP":>6}{"OVPN":>6}{"TOTAL/LIMIT":>14}')
+        print(f'{"USER":<20}{"STATUS":<10}{"SSH":>5}{"DROP":>6}{"OVPN":>6}{"UDP":>5}{"TOTAL/LIMIT":>14}')
         records = accounts.load()
         for name in sorted(self.m.users()):
-            values = [per_protocol.get(protocol, {}).get(name, 0) for protocol in ('ssh', 'dropbear', 'openvpn')]
+            values = [per_protocol.get(protocol, {}).get(name, 0) for protocol in ('ssh', 'dropbear', 'openvpn', 'udp')]
             total = sum(values)
             limit = records.get(name, {}).get('limit', 1)
-            print(f'{name:<20}{"Online" if total else "Offline":<10}{values[0]:>5}{values[1]:>6}{values[2]:>6}{str(total) + "/" + str(limit):>14}')
+            print(f'{name:<20}{"Online" if total else "Offline":<10}{values[0]:>5}{values[1]:>6}{values[2]:>6}{values[3]:>5}{str(total) + "/" + str(limit):>14}')
 
     def change_limit(self):
         name = self.username()
@@ -305,7 +309,7 @@ class Classic:
             self.m.run('usermod', '-U', name)
 
     def public_endpoint(self, config):
-        default = config.get('endpoint') or self.m.detect_public_ip()
+        default = self.m.detect_public_ip() or config.get('endpoint', '')
         suffix = f' [{default}]' if default else ''
         config['endpoint'] = self.m.endpoint(input('Public server IP / domain' + suffix + ': ').strip() or default)
         self.m.save(config)
@@ -357,11 +361,20 @@ class Classic:
             print('Online App limit saved. The API uses it immediately.')
             return
         if action in ('stop', 'restart'):
+            if name == 'squid':
+                print('[1/3] ' + ('Stopping' if action == 'stop' else 'Restarting') + ' Squid...', flush=True)
             self.m.run('systemctl', 'disable' if action == 'stop' else 'restart',
                        *(['--now'] if action == 'stop' else []), self.m.SERVICES[name])
             if action == 'stop':
+                if name == 'squid':
+                    print('[2/3] Saving disabled state...', flush=True)
                 config['enabled'] = [item for item in config['enabled'] if item != name]
                 self.m.save(config)
+            elif name == 'squid':
+                print('[2/3] Checking Squid service status...', flush=True)
+                self.m.run('systemctl', 'is-active', '--quiet', self.m.SERVICES[name])
+            if name == 'squid':
+                print('[3/3] Squid ' + ('stopped.' if action == 'stop' else 'restarted.'), flush=True)
             return
         if action == 'endpoint':
             self.public_endpoint(config)
@@ -413,7 +426,7 @@ class Classic:
                 print(f'Allow TCP {config["online_port"]} in host/provider firewalls for this link.')
                 print('Keep this link private. The profile contains a shared TLS authentication key, not the server private key.')
             return
-        if name in ('openvpn', 'tunnel', 'tls') and not config.get('endpoint'):
+        if name in ('openvpn', 'tunnel', 'tls', 'squid') and not config.get('endpoint'):
             self.public_endpoint(config)
         defaults = {'dropbear': 109, 'sslh': 443, 'badvpn': 7300}
         number = self.m.port(input(f'TCP port [{config.get(name + "_port", defaults.get(name))}]: ') or config.get(name + '_port', defaults.get(name)))
@@ -438,7 +451,8 @@ class Classic:
                 return
             config['tls_backend'] = backend
         if name == 'squid':
-            networks = input('Allowed client IPs/CIDRs (space separated): ').split()
+            defaults = ' '.join(config.get('squid_networks', ['127.0.0.1/32']))
+            networks = (input(f'Allowed client IPs/CIDRs [{defaults}]: ') or defaults).split()
             if not networks:
                 raise ValueError('Enter at least one client IP/CIDR.')
             config['squid_networks'] = networks
@@ -462,7 +476,7 @@ class Classic:
         actions = {'1': self.openssh, '2': lambda: self.service('squid'),
                    '3': lambda: self.service('dropbear'), '4': lambda: self.service('openvpn'),
                    '5': lambda: self.service('tunnel'), '6': lambda: self.service('tls'),
-                   '7': lambda: self.service('sslh')}
+                   '7': lambda: self.service('sslh'), '8': self.xui, '9': self.udp}
         while True:
             self.header('CONNECTION MODE')
             for number, label in CONNECTIONS:
@@ -530,15 +544,35 @@ class Classic:
             self.m.run('sysctl', '-p', '/etc/sysctl.d/91-vpnmanager-bbr.conf')
 
     def backup(self):
-        from private_backup import create, restore
+        from private_backup import create, restore_source
+        import backup_links
+        import secrets
         action = self.m.choose('BACKUP MANAGER', [('1', 'Create private backup', 'create'),
-            ('2', 'Restore private backup', 'restore'), ('0', 'Back', None)])
+            ('2', 'Restore backup from file / URL', 'restore'), ('3', 'Create encrypted download link', 'link'), ('0', 'Back', None)])
         if action == 'create':
             print('Backup saved: ' + str(create(self.m)))
+        elif action == 'link':
+            config = self.m.load()
+            if not config.get('endpoint'):
+                self.public_endpoint(config)
+            password = getpass.getpass('Backup password (12+ characters; Enter to generate): ') or secrets.token_urlsafe(24)
+            if len(password) < 12:
+                raise ValueError('Use at least 12 characters for the backup password.')
+            minutes = int(input('Download link validity in minutes [60]: ') or '60')
+            if not 1 <= minutes <= 1440:
+                raise ValueError('Choose 1-1440 minutes.')
+            self.m.configure('online', config, config['online_port'])
+            archive = create(self.m)
+            url, _ = backup_links.create(self.m, config, archive, password, minutes)
+            print('Backup download: ' + url)
+            print('Backup password: ' + password)
+            print('Save the file and password before the link expires. Restore needs both.')
         elif action == 'restore':
-            filename = input('Private backup archive path: ')
-            if input('Type RESTORE to restore managed accounts/configuration: ') == 'RESTORE':
-                restore(self.m, filename)
+            filename = input('Backup file path or URL: ').strip()
+            default = self.m.detect_public_ip() or self.m.load().get('endpoint', '')
+            address = input(f'Public IP / DNS after restore [{default}]: ').strip() or default
+            # The user selected restore; its authenticated backup is the requested action.
+            restore_source(self.m, filename, endpoint=address)
 
     def hosts(self, remove=False):
         config = self.m.load()
@@ -640,9 +674,39 @@ class Classic:
             self.m.run('systemctl', 'reboot')
 
     def speedtest(self):
-        if not shutil.which('speedtest-cli'):
-            extras.package(self.m, 'speedtest-cli')
-        self.m.run('speedtest-cli', '--secure')
+        import speed_test
+        speed_test.run()
+
+    def xui(self):
+        import xui
+        action = self.m.choose('X-UI PANEL', [('1', 'Install requested x-ui version', 'install'),
+            ('2', 'Open x-ui management menu', 'menu'), ('0', 'Back', None)])
+        if action == 'install':
+            xui.install(self.m)
+        elif action == 'menu':
+            self.m.run('x-ui')
+
+    def udp(self):
+        import udp_runtime
+        config = self.m.load()
+        action = self.m.choose('UDP / HYSTERIA 1', [('1', 'Install / configure', 'install'),
+            ('2', 'Disable UDP', 'disable'), ('3', 'Show client settings', 'client'), ('0', 'Back', None)])
+        if action == 'install':
+            if not config.get('endpoint'):
+                self.public_endpoint(config)
+            number = self.m.port(input(f'UDP port [{config.get("udp_port", 36712)}]: ') or config.get('udp_port', 36712))
+            config['udp_obfs'] = input(f'Obfuscation [{config.get("udp_obfs", "")}]: ') or config.get('udp_obfs', '')
+            udp_runtime.configure(self.m, config, number)
+        elif action == 'disable':
+            self.m.run('systemctl', 'disable', '--now', self.m.SERVICES['udp'])
+            config['enabled'] = [item for item in config['enabled'] if item != 'udp']
+            self.m.save(config)
+        elif action == 'client':
+            print(f'Server: {config.get("endpoint")}; UDP port: {config.get("udp_port", 36712)}')
+            print('Hysteria v1; auth: username:password (same account as SSH/OpenVPN).')
+            print('Obfuscation: ' + config.get('udp_obfs', ''))
+            print('SNI: ' + config.get('udp_server_name', config.get('endpoint', '')))
+            print('CA certificate: /etc/vpnmanager/udp-ca.crt')
 
     def checkuser(self):
         action = self.m.choose('CHECKUSER', [('1', 'Check a managed user locally', 'local'),

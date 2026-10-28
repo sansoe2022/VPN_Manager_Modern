@@ -4,6 +4,8 @@ import base64
 import accounts
 import profile_links
 import dropbear_state
+import udp_runtime
+import backup_links
 import grp
 import pwd
 import json
@@ -77,20 +79,24 @@ def collect():
         except FileNotFoundError:
             continue
     drop = [name for name, _ in dropbear_state.sessions() if name in managed]
-    return {'ssh': len(ssh), 'dropbear': len(drop), 'openvpn': len(vpn), 'total': len(ssh) + len(drop) + len(vpn),
-            'users': {'ssh': ssh, 'dropbear': drop, 'openvpn': vpn}, 'openvpn_status': source}
+    udp = [name for name in udp_runtime.sessions() if name in managed]
+    return {'ssh': len(ssh), 'dropbear': len(drop), 'openvpn': len(vpn), 'udp': len(udp), 'total': len(ssh) + len(drop) + len(vpn) + len(udp),
+            'users': {'ssh': ssh, 'dropbear': drop, 'openvpn': vpn, 'udp': udp}, 'openvpn_status': source}
 
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split('?', 1)[0]
+        if path.startswith('/backups/'):
+            self.download_backup(path)
+            return
         if path.startswith('/profiles/'):
             self.download_profile(path)
             return
         if path == '/checkuser':
             self.check_user()
             return
-        if path not in ('/server/online_app', '/server/online', '/online', '/health'):
+        if path not in ('/server/online_app', '/server/online', '/online', '/health', '/udpserver/online', '/udpserver/online_app'):
             self.send_error(404, 'Unknown endpoint')
             return
         try:
@@ -112,18 +118,42 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(503, 'Session data is unavailable')
 
     def log_request(self, code='-', size='-'):
-        if getattr(self, 'path', '').startswith('/profiles/'):
+        if getattr(self, 'path', '').startswith(('/profiles/', '/backups/')):
             # Do not put bearer download tokens in the journal/access log.
-            self.log_message('"%s /profiles/[redacted] %s" %s %s', self.command, self.request_version, str(code), str(size))
+            prefix = '/backups/' if self.path.startswith('/backups/') else '/profiles/'
+            self.log_message('"%s %s[redacted] %s" %s %s', self.command, prefix, self.request_version, str(code), str(size))
         else:
             super().log_request(code, size)
 
     def do_HEAD(self):
         path = self.path.split('?', 1)[0]
-        if path.startswith('/profiles/'):
+        if path.startswith('/backups/'):
+            self.download_backup(path, head=True)
+        elif path.startswith('/profiles/'):
             self.download_profile(path, head=True)
         else:
             self.send_error(405, 'Use GET for this endpoint')
+
+    def download_backup(self, path, head=False):
+        source = backup_links.resolve(path)
+        if source is None:
+            self.send_error(404, 'Download link is invalid or expired')
+            return
+        with source.open('rb') as file:
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/octet-stream')
+            self.send_header('Content-Disposition', 'attachment; filename="backup.vpnbak"')
+            self.send_header('Content-Length', str(source.stat().st_size))
+            self.send_header('Cache-Control', 'no-store')
+            self.send_header('Referrer-Policy', 'no-referrer')
+            self.send_header('X-Content-Type-Options', 'nosniff')
+            self.end_headers()
+            if not head:
+                while True:
+                    block = file.read(1024 * 1024)
+                    if not block:
+                        break
+                    self.wfile.write(block)
 
     def download_profile(self, path, head=False):
         body = profile_links.read(path)

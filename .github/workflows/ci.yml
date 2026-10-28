@@ -20,6 +20,17 @@ jobs:
           docker run --rm vpnmanager-test
       - name: Test real OpenVPN authentication over TCP, HTTP and WebSocket
         run: docker run --rm --cap-add NET_ADMIN --entrypoint python3 vpnmanager-test tests/openvpn_live.py
+      - name: Test shared UDP authentication, data relay and online counts
+        run: |
+          python3 tests/fetch_hysteria.py /tmp/hysteria-test
+          docker run --rm -v /tmp/hysteria-test:/tmp/hysteria-test:ro --entrypoint python3 vpnmanager-test tests/udp_live.py
+      - name: Restore a full encrypted backup into another fresh container
+        if: matrix.distro == 'ubuntu:20.04'
+        run: |
+          docker run --rm --entrypoint python3 vpnmanager-test tests/installer_smoke.py
+          mkdir -p "$RUNNER_TEMP/vpnmanager-migration"
+          docker run --rm --cap-add NET_ADMIN -v /tmp/hysteria-test:/tmp/hysteria-test:ro -v "$RUNNER_TEMP/vpnmanager-migration:/transfer" --entrypoint python3 vpnmanager-test tests/migration_smoke.py export
+          docker run --rm --cap-add NET_ADMIN -v /tmp/hysteria-test:/tmp/hysteria-test:ro -v "$RUNNER_TEMP/vpnmanager-migration:/transfer:ro" --entrypoint python3 vpnmanager-test tests/migration_smoke.py restore
 
   badvpn-source:
     runs-on: ubuntu-latest

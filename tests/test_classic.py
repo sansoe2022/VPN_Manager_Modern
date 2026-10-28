@@ -25,7 +25,7 @@ class Navigation(unittest.TestCase):
         second = classic.MORE_LEFT + classic.MORE_RIGHT
         self.assertEqual({int(key) for key, _ in first}, set(range(23)))
         self.assertEqual({int(key) for key, _ in second}, {0, *range(23, 36)})
-        self.assertEqual({int(key) for key, _ in classic.CONNECTIONS}, set(range(8)))
+        self.assertEqual({int(key) for key, _ in classic.CONNECTIONS}, set(range(10)))
         self.assertNotIn('V2RAY', classic.table(first, second))
         self.assertIn('[01] CREATE USER', classic.table(classic.MAIN_LEFT, classic.MAIN_RIGHT))
         self.assertIn('[34] RESELLER BOT', classic.table(classic.MORE_LEFT, classic.MORE_RIGHT))
@@ -54,7 +54,7 @@ class Navigation(unittest.TestCase):
 
     def test_invalid_connection_selection_never_exits(self):
         ui = classic.Classic(manager)
-        with patch.object(ui, 'header'), patch('builtins.input', side_effect=['08', 'bad', '00']), \
+        with patch.object(ui, 'header'), patch('builtins.input', side_effect=['99', 'bad', '00']), \
              contextlib.redirect_stdout(io.StringIO()) as output:
             ui.connections()
         self.assertEqual(output.getvalue().count('Invalid option.'), 2)

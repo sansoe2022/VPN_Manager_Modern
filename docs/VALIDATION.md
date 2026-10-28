@@ -2,10 +2,10 @@
 
 Date: 2026-10-28. Architecture: amd64. Disposable distro containers.
 
-The original-numbered English menu is covered by 41 unit checks, including the
+The original-numbered English menu is covered by 50 unit checks, including the
 specific **10 → 00 → main menu**, **22 → More → 35 → main menu** paths. The removed
-V2Ray slot is rejected without closing the program. All main-page/More-page numbers
-are retained, and every connection entry except 08 keeps its original number.
+standalone V2Ray installer remains removed. Main-page/More-page numbers and
+connection entries 01–07 are retained; 08/09 now expose requested x-ui/UDP setup.
 
 Compatibility matrix: Ubuntu 20.04/22.04/24.04/26.04 and Debian 12/13.
 The integration script checks real distribution daemons/libraries:
@@ -62,3 +62,29 @@ custom paths and filtering unrelated listening ports out of the menu banner.
 Further regression checks cover preserving independent proxy ports during edits,
 selecting the OpenVPN port after editing SSH, labeling the four requested services,
 and consuming fragmented/pipelined extra HTTP headers without changing binary data.
+
+
+## Shared UDP and full migration checks
+
+`tests/udp_live.py` runs the pinned Hysteria v1.3.5 binary with a real client,
+verified TLS, native TCP/UDP relays, one-character shared Unix credentials, password
+changes, expiry rejection and merged online/disconnect counts. It passed on all
+six distributions above. There is no separate UDP users database or Redis fixture.
+
+`tests/migration_smoke.py` exports a full encrypted backup from Ubuntu 20, restores
+it by HTTP URL into a fresh Debian 13 container, checks private-key hashes, account
+password/expiry/limit data, source/binary files, SQLite x-ui fixture data, launchers
+and service reconstruction. It then runs real SSH/OpenVPN/WS/SSL/UDP clients on
+the restored state. Administrator shadow data remains unchanged. Container systemd
+commands and package installation are simulated; their actual daemons/libraries
+are exercised. Boot activation and a full fresh VPS package/network test remain
+in the acceptance checklist. x-ui tests cover OS selection, script checksum/syntax
+and data migration fixtures, not a live public panel installation.
+
+Crypto tests cover round-trip, wrong passwords/tampering before restore, link
+expiry/redaction and strict archive paths. The speed-test path has local HTTP
+transfer tests; its primary public HTTPS download and upload endpoints were also
+verified with a small transfer through the execution environment's network path.
+That measurement does not describe the user's VPS bandwidth.
+The installer prompt check uses a real pseudo-terminal for fresh/URL-restore
+selection and verifies noninteractive restore argument forwarding on Ubuntu 20.

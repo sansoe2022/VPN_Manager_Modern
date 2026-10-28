@@ -98,6 +98,9 @@ WantedBy=timers.target
 ''', 0o644)
     m.run('systemctl', 'daemon-reload')
     m.run('systemctl', 'enable' if enabled else 'disable', '--now', 'vpnmanager-limiter.timer')
+    config = m.load()
+    config['limiter_enabled'] = enabled
+    m.save(config)
 
 
 def torrent(m, enabled):

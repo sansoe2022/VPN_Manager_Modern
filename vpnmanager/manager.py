@@ -23,6 +23,7 @@ import dropbear_state
 import profile_links
 import shared_keys
 import proxy_config
+import udp_runtime
 from urllib.request import urlopen
 from urllib.error import URLError
 
@@ -38,7 +39,8 @@ DEFAULTS = {'host': '0.0.0.0', 'ssh_port': 22, 'tunnel_port': 80, 'tls_port': 44
 SERVICES = {'tunnel': 'vpnmanager-tunnel', 'tls': 'vpnmanager-tls',
             'online': 'vpnmanager-online', 'squid': 'squid',
             'openvpn': 'openvpn-server@vpnmanager', 'dropbear': 'vpnmanager-dropbear',
-            'sslh': 'vpnmanager-sslh', 'badvpn': 'vpnmanager-badvpn'}
+            'sslh': 'vpnmanager-sslh', 'badvpn': 'vpnmanager-badvpn',
+            'udp': 'vpnmanager-udp', 'xui': 'x-ui'}
 
 
 def run(*args, **kwargs):
@@ -154,7 +156,7 @@ def managed(username):
 
 
 def validate_password(value):
-    if not value or any(char in value for char in ':\r\n\0'):
+    if not isinstance(value, str) or not value or any(char in value for char in ':\r\n\0'):
         raise ValueError('Use at least 1 character, without colons, NUL or newlines.')
     return value
 
@@ -164,6 +166,7 @@ def set_password(username, value):
     validate_password(value)
     # Apply the requested policy only to this account, not the host PAM policy.
     run('chpasswd', '-c', 'SHA512', input=f'{username}:{value}\n')
+    accounts.update(username, password=value)
 
 
 def password(username):
@@ -201,12 +204,17 @@ def create_user(username, days, secret=None, limit=1):
         accounts.update(username, limit=limit)
     except BaseException:
         run('userdel', username)
+        accounts.remove(username)
         raise
     print('Account created. SSH clients must use forwarding / no-session mode.')
 
 
 def disconnect(username):
     managed(username)
+    if username in udp_runtime.sessions():
+        # Hysteria v1 has no per-client disconnect API. Reconnect valid UDP users.
+        run('systemctl', 'restart', SERVICES['udp'])
+        print('UDP restarted to revoke this session; other UDP clients may reconnect.')
     result = subprocess.run(['pkill', '-TERM', '-u', username], check=False)
     if result.returncode not in (0, 1):
         raise ValueError('Unable to disconnect SSH sessions.')
@@ -237,6 +245,8 @@ def expire_portable():
                 run('usermod', '-L', username)
             disconnect(username)
     profile_links.cleanup()
+    import backup_links
+    backup_links.cleanup()
 
 
 def enforce_limits():
@@ -274,18 +284,19 @@ def start(name, config):
         details = capture('journalctl', '-u', unit, '-n', '15', '--no-pager', '-o', 'cat')
         raise ValueError(f'{name} failed to start.\n{details}') from None
     numbers = [entry['port'] for entry in proxy_config.listeners(config, configured=True)] if name == 'tunnel' else [config[name + '_port']]
-    if name in ('openvpn', 'tunnel'):
+    protocol = 'UDP' if name == 'udp' else 'TCP'
+    if name in ('openvpn', 'tunnel', 'udp'):
         for number in numbers:
             for _ in range(30):
-                if capture('ss', '-H', '-ltn', 'sport', '=', str(number)):
+                if capture('ss', '-H', '-lun' if name == 'udp' else '-ltn', 'sport', '=', str(number)):
                     break
                 time.sleep(0.1)
             else:
                 details = capture('journalctl', '-u', unit, '-n', '15', '--no-pager', '-o', 'cat')
-                raise ValueError(f'{name} did not open TCP {number}.\n{details}')
+                raise ValueError(f'{name} did not open {protocol} {number}.\n{details}')
     config['enabled'] = sorted(set(config['enabled']) | {name})
     save(config)
-    print(f'{name} started on TCP {", ".join(map(str, numbers))}. Allow these ports in your host/provider firewall.')
+    print(f'{name} started on {protocol} {", ".join(map(str, numbers))}. Allow these ports in your host/provider firewall.')
 
 
 def configure_ssh(config, number, bind=None):
@@ -371,10 +382,12 @@ def configure(name, config, number):
         free_port(number)
     config[name + '_port'] = number
     if name == 'squid':
+        print('[1/4] Preparing Squid configuration...', flush=True)
         path = Path('/etc/squid/squid.conf')
         backup(path)
         candidate = path.with_name('vpnmanager-check.conf')
         write(candidate, squid_config(config), 0o644)
+        print('[2/4] Checking Squid configuration...', flush=True)
         run('squid', '-k', 'parse', '-f', str(candidate))
         os.replace(candidate, path)
     elif name == 'tls':
@@ -413,7 +426,11 @@ connect = 127.0.0.1:{config[backend + '_port']}
     elif name == 'openvpn':
         setup_openvpn(config)
     save(config)
+    if name == 'squid':
+        print('[3/4] Starting Squid listener...', flush=True)
     start(name, config)
+    if name == 'squid':
+        print(f'[4/4] Squid is running on TCP {number}.', flush=True)
     if name in ('tunnel', 'openvpn') and 'squid' in config['enabled']:
         configure('squid', config, config['squid_port'])
     if name == 'tunnel' and 'tls' in config['enabled']:
@@ -717,13 +734,29 @@ def menu():
 def main():
     os.environ['LC_ALL'] = 'C.UTF-8'
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', nargs='?', default='menu', choices=['menu', 'initialize', 'online', 'diagnostics', 'expire', 'serve-online', 'serve-tunnel', 'enforce-limits', 'serve-bot', 'feature'])
+    parser.add_argument('command', nargs='?', default='menu', choices=['menu', 'initialize', 'online', 'diagnostics', 'expire', 'serve-online', 'serve-tunnel', 'serve-udp', 'restore', 'rebuild', 'enforce-limits', 'serve-bot', 'feature'])
     parser.add_argument('name', nargs='?', help='Feature name or bot role')
+    parser.add_argument('--password-file', help='Root-private file containing the backup password')
+    parser.add_argument('--endpoint', help='Public IP/domain to use after restore')
     args = parser.parse_args()
     root()
     config = load()
     if args.command == 'menu':
         menu()
+    elif args.command == 'serve-udp':
+        sys.exit(udp_runtime.serve(sys.modules[__name__]))
+    elif args.command == 'restore':
+        import private_backup
+        if not args.name:
+            raise ValueError('Provide a backup file path or encrypted backup URL.')
+        secret = Path(args.password_file).read_text().rstrip('\r\n') if args.password_file else None
+        address = args.endpoint or detect_public_ip()
+        if sys.stdin.isatty():
+            address = input(f'Public IP / DNS after restore [{address or config.get("endpoint", "")}]: ').strip() or address or config.get('endpoint')
+        private_backup.restore_source(sys.modules[__name__], args.name, password=secret, endpoint=address)
+    elif args.command == 'rebuild':
+        import private_backup
+        private_backup.rebuild(sys.modules[__name__])
     elif args.command == 'feature':
         from classic import Classic
         Classic(sys.modules[__name__]).feature(args.name)

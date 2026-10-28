@@ -1,50 +1,39 @@
-# SSHPlus Manager — English Edition
+# VPN Manager Modern
 
-The original two-page SSHPlus menu with readable, unencrypted English source.
-Supports **Ubuntu 20.04+** and **Debian 12+**. **V2Ray setup is removed.**
+Readable English source with the original two-page menu.
+**Ubuntu 20.04+ · Debian 12+**
 
-## Install
-
-Run on a systemd VPS with root/sudo access:
+## Install / update
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sansoe2022/VPN_Manager_Modern/main/Plus | sudo bash
 sudo menu
 ```
 
-Source:
-https://github.com/sansoe2022/VPN_Manager_Modern
+A fresh installation offers **Fresh install** or **Restore from backup URL**.
+Restore reinstalls required packages and configured services automatically.
+Existing Modern configurations/accounts are retained during updates.
 
-## Update an existing Modern installation
+## Main options
 
-```bash
-cd VPN_Manager_Modern
-git pull --ff-only
-sudo bash install.sh
-sudo menu
-```
+- **09:** user/password report. Older unsaved passwords need one reset in **07**.
+- **10 → 02:** Squid setup/stop with progress and saved client CIDR defaults.
+- **10 → 04 → 04:** OpenVPN profile file/link; choose transport **3** for HTTP Custom WS.
+- **10 → 05:** independent SSH/OpenVPN WS ports; adding one preserves the others.
+- **10 → 08:** x-ui (sansoe2022 on Ubuntu 20; alireza0 on Ubuntu 24+).
+- **10 → 09:** UDP/Hysteria v1; same username/password as SSH/OpenVPN, no license key.
+- **11:** HTTPS download/upload speed test, with download fallback.
+- **15 → 03:** encrypted full-backup download link; keep its password separately.
+- **15 → 02:** restore from file/URL and start restored services.
+- **19 → 04:** shared Online App limit. UDP uses the same online API.
+- **10 → 00:** main menu; **22/35:** More/back; **00:** exit.
 
-Restart configured services with **26** on the More page.
+The banner names listening TCP/UDP services. IP/domain prompts default to the
+current detected VPS IP. Menu source and launchers are unencrypted.
 
-## Menu
+OpenVPN keeps the original shared keys. Full backups include source, keys, managed
+accounts, service configs, optional binaries and x-ui data. Restore on the same CPU
+architecture; a fresh VPS still needs systemd, network access and required kernel support.
+Open provider/host ports yourself; OpenVPN needs `/dev/net/tun`.
 
-- **01–21:** users, monitoring, limits, backup, SSH/VPN/proxy and server tools.
-- **10 → 05:** proxy for SSH, OpenVPN, or both; missing backends are configured.
-  Add separate ports for OpenVPN WS and SSH WS; adding a port preserves the others.
-- **10 → 04 → 04:** export an OVPN file or download link (default 60 minutes).
-  For HTTP Custom with an app payload, choose transport **3**.
-- **10 → 00:** return to the main menu.
-- **19 → 04:** change the Online App API limit.
-- **22:** More page; **35:** back; **00:** exit.
-- SSH, Dropbear, Squid, OpenVPN, HTTP/WebSocket, TLS, SSLH, BadVPN and Telegram bots.
-
-Menu source: [classic.py](vpnmanager/classic.py). Plain launchers: [Modulos](Modulos).
-The banner labels each listening Connection Mode service and its TCP/UDP port. IP/domain prompts
-default to the detected VPS IP (or your saved endpoint). User creation asks username, visible
-password, validity, then connection limit (minimum 1 character for username/password).
-Menu selections clear the screen before opening each page. OpenVPN uses the original public shared
-key bundle on every VPS; existing Modern profiles must be re-exported after switching.
-
-Open the required ports in your host/provider firewalls. OpenVPN requires `/dev/net/tun`.
-
-[Guide](docs/GUIDE.md) · [Migration](docs/MIGRATION.md) · [Validation](docs/VALIDATION.md)
+[Guide](docs/GUIDE.md) · [Backup / migration](docs/MIGRATION.md) · [Validation](docs/VALIDATION.md)
