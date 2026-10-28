@@ -22,11 +22,12 @@ import signal
 import dropbear_state
 import profile_links
 import shared_keys
+import proxy_config
 from urllib.request import urlopen
 from urllib.error import URLError
 
 from online import collect, serve as online_serve
-from tunnel import serve as tunnel_serve
+from tunnel import serve_listeners as tunnel_serve
 
 CONFIG = Path('/etc/vpnmanager/config.json')
 STATE = Path('/var/lib/vpnmanager')
@@ -272,17 +273,19 @@ def start(name, config):
     except subprocess.CalledProcessError:
         details = capture('journalctl', '-u', unit, '-n', '15', '--no-pager', '-o', 'cat')
         raise ValueError(f'{name} failed to start.\n{details}') from None
+    numbers = [entry['port'] for entry in proxy_config.listeners(config, configured=True)] if name == 'tunnel' else [config[name + '_port']]
     if name in ('openvpn', 'tunnel'):
-        for _ in range(30):
-            if capture('ss', '-H', '-ltn', 'sport', '=', str(config[name + '_port'])):
-                break
-            time.sleep(0.1)
-        else:
-            details = capture('journalctl', '-u', unit, '-n', '15', '--no-pager', '-o', 'cat')
-            raise ValueError(f'{name} did not open TCP {config[name + "_port"]}.\n{details}')
+        for number in numbers:
+            for _ in range(30):
+                if capture('ss', '-H', '-ltn', 'sport', '=', str(number)):
+                    break
+                time.sleep(0.1)
+            else:
+                details = capture('journalctl', '-u', unit, '-n', '15', '--no-pager', '-o', 'cat')
+                raise ValueError(f'{name} did not open TCP {number}.\n{details}')
     config['enabled'] = sorted(set(config['enabled']) | {name})
     save(config)
-    print(f'{name} started on TCP {config[name + "_port"]}. Allow this port in your host/provider firewall.')
+    print(f'{name} started on TCP {", ".join(map(str, numbers))}. Allow these ports in your host/provider firewall.')
 
 
 def configure_ssh(config, number, bind=None):
@@ -341,11 +344,12 @@ def squid_config(config):
     host_acl = ('acl manager_hosts dstdomain ' + ' '.join(hosts) + '\n'
                 + 'acl host_ports port 80 443\n'
                 + 'http_access allow manager_clients host_ports manager_hosts\n') if hosts else ''
+    proxy_ports = ' '.join(str(entry['port']) for entry in proxy_config.listeners(config)) or str(config['tunnel_port'])
     return f'''http_port {config['squid_port']}
 visible_hostname vpnmanager
 acl manager_clients src {' '.join(networks)}
 acl vpn_backend dst 127.0.0.1/32
-acl vpn_ports port {config['ssh_port']} {config['openvpn_port']} {config['tunnel_port']}
+acl vpn_ports port {config['ssh_port']} {config['openvpn_port']} {proxy_ports}
 http_access allow manager_clients vpn_ports vpn_backend
 {host_acl}http_access deny all
 cache deny all
@@ -359,7 +363,8 @@ def configure(name, config, number):
     if name not in SERVICES:
         raise ValueError('Unknown service.')
     old_port = config[name + '_port']
-    if name not in config['enabled'] or old_port != number:
+    known_proxy_port = name == 'tunnel' and 'tunnel' in config['enabled'] and number in {entry['port'] for entry in proxy_config.listeners(config)}
+    if not known_proxy_port and (name not in config['enabled'] or old_port != number):
         # Distribution packages may already start their default listener.
         if name == 'squid' and number == 3128 and name not in config['enabled']:
             run('systemctl', 'stop', 'squid')
@@ -395,7 +400,10 @@ accept = {config['host']}:{number}
 connect = 127.0.0.1:{config[backend + '_port']}
 ''')
     elif name == 'tunnel':
-        enabled = config.get('proxy_backends', ['ssh', 'openvpn'])
+        enabled = {backend for entry in proxy_config.listeners(config, configured=True) for backend in entry['backends']}
+        # Keep the direct configure API compatible with old single-listener callers.
+        if not enabled:
+            enabled = config.get('proxy_backends', ['ssh', 'openvpn'])
         if not enabled or set(enabled) - {'ssh', 'openvpn'}:
             raise ValueError('Select SSH, OpenVPN or both proxy backends.')
         if 'ssh' in enabled and not Path('/etc/vpnmanager/sshd_config').exists():
@@ -416,7 +424,8 @@ def configure_proxy(config, number, backends):
     number = port(number)
     if not backends or set(backends) - {'ssh', 'openvpn'}:
         raise ValueError('Select SSH, OpenVPN or both proxy backends.')
-    if 'tunnel' not in config['enabled'] or config['tunnel_port'] != number:
+    existing = proxy_config.listeners(config, configured=True)
+    if 'tunnel' not in config['enabled'] or number not in {entry['port'] for entry in existing}:
         free_port(number)
     if 'ssh' in backends:
         if not Path('/etc/vpnmanager/sshd_config').exists():
@@ -425,12 +434,17 @@ def configure_proxy(config, number, backends):
     if 'openvpn' in backends:
         configure('openvpn', config, config['openvpn_port'])
     config['proxy_backends'] = list(backends)
+    entry = {'port': number, 'backends': list(backends), 'default': config.get('proxy_default_backend', backends[0])}
+    config['proxy_listeners'] = [item for item in existing if item['port'] != number] + [entry]
     configure('tunnel', config, number)
     print('Proxy backends: ' + ', '.join(backends))
     print('Use /ssh for SSH and /openvpn for OpenVPN, or an allowed local CONNECT target.')
     if 'openvpn' in backends:
         print(f'OpenVPN WS/raw HTTP port: {number} (not the Online App port).')
         print(r'OpenVPN payload: GET /openvpn HTTP/1.1\r\nHost: [host]\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n')
+    print('Configured proxy listeners:')
+    for item in proxy_config.listeners(config, configured=True):
+        print(f'  {proxy_config.label(item)}: {item["port"]}')
 
 
 def openvpn_version():
@@ -601,11 +615,10 @@ def export_client(config, output):
     transport = config.get('openvpn_client_transport', 'direct')
     if transport not in ('direct', 'proxy', 'custom-app'):
         raise ValueError('Choose direct, HTTP proxy or a custom-app client transport.')
-    if transport in ('proxy', 'custom-app') and ('tunnel' not in config['enabled'] or 'openvpn' not in config.get('proxy_backends', [])):
-        raise ValueError('Enable the OpenVPN proxy backend in menu 10 -> 05 first.')
+    proxy_port = proxy_config.port_for(config, 'openvpn') if transport in ('proxy', 'custom-app') else None
     remote = '127.0.0.1' if transport == 'proxy' else host
-    remote_port = config['tunnel_port'] if transport == 'custom-app' else config['openvpn_port']
-    proxy = f'http-proxy {host} {config["tunnel_port"]}\nhttp-proxy-option VERSION 1.1\n' if transport == 'proxy' else ''
+    remote_port = proxy_port if transport == 'custom-app' else config['openvpn_port']
+    proxy = f'http-proxy {host} {proxy_port}\nhttp-proxy-option VERSION 1.1\n' if transport == 'proxy' else ''
     cipher_list = 'AES-256-GCM:AES-128-GCM' + (':AES-256-CBC' if shared else '')
     fallback = 'data-ciphers-fallback AES-256-CBC\ncipher AES-256-CBC\n' if shared else ''
     key_tag = 'tls-auth' if shared else 'tls-crypt'
@@ -640,6 +653,13 @@ ncp-ciphers {cipher_list}
 
 
 def diagnostics(config):
+    print('Configured connection ports:')
+    for item in proxy_config.listeners(config, configured=True):
+        print(f'  {proxy_config.label(item)}: TCP {item["port"]}; default backend: {item["default"]}')
+    if 'openvpn' in config['enabled']:
+        print(f'  OpenVPN: TCP {config["openvpn_port"]}')
+    if 'tls' in config['enabled']:
+        print(f'  SSL: TCP {config["tls_port"]}; backend: {config.get("tls_backend", "tunnel")}')
     print('Service status:')
     for name, unit in {'ssh backend': 'vpnmanager-sshd', **SERVICES}.items():
         result = subprocess.run(['systemctl', 'is-active', unit], capture_output=True, text=True)
@@ -715,7 +735,7 @@ def main():
     elif args.command == 'serve-online':
         online_serve(config['host'], config['online_port'])
     elif args.command == 'serve-tunnel':
-        asyncio.run(tunnel_serve(config['host'], config['tunnel_port'], config['ssh_port'], config['openvpn_port'], config.get('proxy_backends', ['ssh', 'openvpn']), config.get('proxy_default_backend', 'ssh')))
+        asyncio.run(tunnel_serve(config['host'], proxy_config.listeners(config), config['ssh_port'], config['openvpn_port']))
     elif args.command == 'online':
         print(json.dumps(collect(), indent=2))
     else:

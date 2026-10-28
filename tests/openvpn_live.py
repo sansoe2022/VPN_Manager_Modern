@@ -2,6 +2,7 @@
 import asyncio
 import contextlib
 import os
+import ssl
 from pathlib import Path
 import struct
 import subprocess
@@ -11,9 +12,14 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'vpnmanager'))
 import manager
 import tunnel
+import online
 
-PROXY_PORT = 18080
+PROXY_PORT = 8880
+SSH_PROXY_PORT = 2086
 ADAPTER_PORT = 18081
+SSH_ADAPTER_PORT = 18082
+
+DOUBLE_HEADER = b'CONNECT / HTTP/1.1\r\nHost: dl.dir.freefiremobile.com\r\n\r\nCF-RAY / HTTP/1.1\r\nHost: vpn.example.com\r\nUpgrade: Mozilla/5.0\r\n\r\n'
 
 
 async def from_ws(reader, writer):
@@ -46,17 +52,23 @@ async def adapter(reader, writer, mode):
     remote = None
     tasks = []
     try:
-        upstream, remote = await asyncio.open_connection('127.0.0.1', PROXY_PORT)
-        if mode == 'legacy':
+        context = ssl.create_default_context(cafile='/etc/vpnmanager/tls.crt') if mode == 'ssl' else None
+        number = 443 if mode == 'ssl' else SSH_PROXY_PORT if mode == 'ssh' else PROXY_PORT
+        upstream, remote = await asyncio.open_connection('127.0.0.1', number, ssl=context,
+            server_hostname='VPN-Manager' if context else None)
+        if mode in ('double-header', 'ssh'):
+            request = DOUBLE_HEADER
+        elif mode == 'legacy':
             request = b'GET /carrier-payload HTTP/1.1\r\nHost: example.com\r\nX-Real-Host: 0.0.0.0:1194\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n'
         elif mode == 'connect':
             request = b'CONNECT 127.0.0.1:1194 HTTP/1.1\r\nHost: localhost\r\n\r\n'
         else:
             request = b'GET /openvpn HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n'
-        remote.write(request)
-        await remote.drain()
-        response = await upstream.readuntil(b'\r\n\r\n')
-        assert response.startswith(b'HTTP/1.1 200' if mode == 'connect' else b'HTTP/1.1 101'), response
+        if mode != 'ssl':
+            remote.write(request)
+            await remote.drain()
+            response = await upstream.readuntil(b'\r\n\r\n')
+            assert response.startswith(b'HTTP/1.1 200' if mode in ('connect', 'double-header', 'ssh') else b'HTTP/1.1 101'), response
         tasks = [asyncio.create_task(to_ws(reader, remote) if mode == 'websocket' else tunnel.relay(reader, remote)),
                  asyncio.create_task(from_ws(upstream, writer) if mode == 'websocket' else tunnel.relay(upstream, writer))]
         await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
@@ -69,8 +81,8 @@ async def adapter(reader, writer, mode):
         for stream in (remote, writer):
             if stream:
                 stream.close()
-                with contextlib.suppress(OSError):
-                    await stream.wait_closed()
+                with contextlib.suppress(OSError, asyncio.TimeoutError):
+                    await asyncio.wait_for(stream.wait_closed(), 2)
 
 
 async def main():
@@ -85,21 +97,44 @@ async def main():
         if args[0] in ('systemctl', 'sysctl'):
             return subprocess.CompletedProcess(args, 0, '')
         return real_run(*args, **kwargs)
-    with patch.object(manager, 'run', side_effect=run):
+    def start(name, config):
+        # Systemd is not PID 1 here; start the generated daemons below instead.
+        config['enabled'] = sorted(set(config['enabled']) | {name})
+        manager.save(config)
+    with patch.object(manager, 'run', side_effect=run), patch.object(manager, 'start', side_effect=start):
         manager.initialize()
         config = manager.load()
-        config.update(endpoint='127.0.0.1', tunnel_port=PROXY_PORT, proxy_backends=['ssh', 'openvpn'], enabled=['tunnel', 'openvpn'])
+        config['endpoint'] = '127.0.0.1'
         manager.create_user('vpnhandshake', 1, secret='1')
-        manager.setup_openvpn(config)
+        manager.configure_proxy(config, PROXY_PORT, ['openvpn'])
+        manager.configure_proxy(config, SSH_PROXY_PORT, ['ssh'])
+        config['tls_backend'] = 'openvpn'
+        manager.configure('tls', config, 443)
         manager.export_client(config, '/tmp/live.ovpn')
         manager.save(config)
     manager.write('/tmp/live-auth', 'vpnhandshake\n1\n')
     server = subprocess.Popen(['openvpn', '--cd', '/etc/openvpn/server', '--config', 'vpnmanager.conf', '--log', '/tmp/live-server.log'])
-    proxy = await asyncio.start_server(lambda r, w: tunnel.handle(r, w, tunnel.routes(2222, 1194, ['ssh', 'openvpn'])), '127.0.0.1', PROXY_PORT)
+    proxy_log = open('/tmp/live-proxy.log', 'w')
+    proxy = subprocess.Popen(['python3', str(Path(manager.__file__)), 'serve-tunnel'], stdout=proxy_log, stderr=subprocess.STDOUT)
+    ssh_log = open('/tmp/live-ssh.log', 'w')
+    sshd = subprocess.Popen(['/usr/sbin/sshd', '-D', '-e', '-f', '/etc/vpnmanager/sshd_config'], stdout=ssh_log, stderr=subprocess.STDOUT)
+    tls = subprocess.Popen(['/usr/bin/stunnel', '/etc/vpnmanager/stunnel.conf'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    ssh_bridge = await asyncio.start_server(lambda r, w: adapter(r, w, 'ssh'), '127.0.0.1', SSH_ADAPTER_PORT)
+    ssh_client = None
     client = None
     try:
         await asyncio.sleep(1)
-        for mode in ('direct', 'legacy', 'connect', 'websocket', 'http-proxy'):
+        ssh_client = subprocess.Popen(['sshpass', '-p', '1', 'ssh', '-N', '-o', 'StrictHostKeyChecking=no',
+            '-o', 'UserKnownHostsFile=/dev/null', '-p', str(SSH_ADAPTER_PORT), 'vpnhandshake@127.0.0.1'],
+            stdout=ssh_log, stderr=subprocess.STDOUT)
+        for _ in range(40):
+            await asyncio.sleep(.1)
+            if 'vpnhandshake' in online.collect()['users']['ssh']:
+                print('PASS real SSH password authentication through WS 2086 and user double-header payload', flush=True)
+                break
+        else:
+            raise AssertionError('SSH WebSocket password login failed')
+        for mode in ('direct', 'legacy', 'connect', 'websocket', 'http-proxy', 'double-header', 'ssl'):
             bridge = None
             if mode not in ('direct', 'http-proxy'):
                 bridge = await asyncio.start_server(lambda r, w: adapter(r, w, mode), '127.0.0.1', ADAPTER_PORT)
@@ -118,6 +153,7 @@ async def main():
                     text = log.read_text() if log.exists() else ''
                     if 'Initialization Sequence Completed' in text:
                         print('PASS real OpenVPN TLS/PAM/TUN: ' + mode, flush=True)
+                        assert ssh_client.poll() is None, 'SSH WS session lost during OpenVPN connection'
                         break
                     if client.poll() is not None:
                         raise AssertionError('OpenVPN client exited: ' + mode)
@@ -136,11 +172,14 @@ async def main():
             print(log.name + '\n' + log.read_text())
         raise
     finally:
-        proxy.close()
-        await proxy.wait_closed()
-        if server.poll() is None:
-            server.terminate()
-            server.wait(timeout=5)
+        ssh_bridge.close()
+        for process in (ssh_client, tls, sshd, proxy, server):
+            if process is not None and process.poll() is None:
+                process.terminate()
+                process.wait(timeout=5)
+        await asyncio.wait_for(ssh_bridge.wait_closed(), 5)
+        proxy_log.close()
+        ssh_log.close()
 
 
 if __name__ == '__main__':

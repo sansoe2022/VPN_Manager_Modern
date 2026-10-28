@@ -10,10 +10,10 @@ import shutil
 import subprocess
 import sys
 import time
-import textwrap
 
 import accounts
 import extras
+import proxy_config
 
 MAIN_LEFT = [('01', 'CREATE USER'), ('02', 'CREATE TRIAL USER'), ('03', 'REMOVE USER'),
              ('04', 'ONLINE MONITOR'), ('05', 'CHANGE EXPIRY'), ('06', 'CHANGE LIMIT'),
@@ -51,12 +51,35 @@ def listening_ports(output):
 def connection_ports(config, output):
     """Intersect real listeners with ports configured in Connection Mode."""
     allowed = {int(config[name + '_port']) for name in
-               ('squid', 'dropbear', 'openvpn', 'tunnel', 'tls', 'sslh')
+               ('squid', 'dropbear', 'openvpn', 'tls', 'sslh')
                if name in config.get('enabled', []) and config.get(name + '_port')}
+    allowed.update(entry['port'] for entry in proxy_config.listeners(config))
     if config.get('ssh_bind') and config['ssh_bind'] not in ('127.0.0.1', '::1'):
         allowed.add(int(config['ssh_port']))
     listeners = listening_ports(output)
     return {'tcp': listeners['tcp'] & allowed, 'udp': set()}
+
+
+def connection_services(config, output):
+    """Describe only configured Connection Mode listeners, using their backend roles."""
+    actual = connection_ports(config, output)
+    result = {'tcp': [], 'udp': []}
+    labels = {'squid': 'Squid Proxy', 'dropbear': 'Dropbear SSH', 'openvpn': 'OpenVPN',
+              'sslh': 'SSLH'}
+    for name, label in labels.items():
+        number = config.get(name + '_port')
+        if name in config.get('enabled', []) and number in actual['tcp']:
+            result['tcp'].append((label, number))
+    if config.get('ssh_port') in actual['tcp'] and config.get('ssh_bind') not in (None, '127.0.0.1', '::1'):
+        result['tcp'].append(('OpenSSH', config['ssh_port']))
+    for entry in proxy_config.listeners(config):
+        if entry['port'] in actual['tcp']:
+            result['tcp'].append((proxy_config.label(entry), entry['port']))
+    if 'tls' in config.get('enabled', []) and config.get('tls_port') in actual['tcp']:
+        backend = config.get('tls_backend', 'tunnel')
+        label = {'openvpn': 'OpenVPN SSL', 'ssh': 'SSH SSL', 'tunnel': 'WebSocket SSL'}[backend]
+        result['tcp'].append((label, config['tls_port']))
+    return result
 
 
 def table(left, right, color=False):
@@ -135,10 +158,11 @@ class Classic:
         except (OSError, ValueError, KeyError, subprocess.SubprocessError):
             print('System statistics are temporarily unavailable.')
         try:
-            ports = connection_ports(self.m.load(), self.m.capture('ss', '-H', '-lntu'))
+            ports = connection_services(self.m.load(), self.m.capture('ss', '-H', '-lntu'))
             for protocol in ('tcp', 'udp'):
-                values = ', '.join(map(str, sorted(ports[protocol]))) or '(none)'
-                print(self.paint(textwrap.fill(protocol.upper() + ' ports: ' + values, width=47, subsequent_indent='  '), '36'))
+                print(self.paint(protocol.upper() + ' Ports:' + ('' if ports[protocol] else ' (none)'), '36'))
+                for label, number in ports[protocol]:
+                    print(self.paint(f'  {label}: {number}', '36'))
         except (OSError, subprocess.SubprocessError):
             print('Listening ports: unavailable')
         print(self.paint(line, '36'))
@@ -297,8 +321,32 @@ class Classic:
                             ('6', 'Revoke all profile download links', 'revoke')]
         if name == 'online':
             options.insert(3, ('4', 'Change Online App limit', 'app-limit'))
-        action = self.m.choose(name.upper() + (' [enabled]' if active else ' [disabled]'), options)
+        title = name.upper() + (' [enabled]' if active else ' [disabled]')
+        if name == 'tunnel':
+            title = 'PROXY / WEBSOCKET' + (' [enabled]' if active else ' [disabled]')
+            title += ''.join(f'\n{proxy_config.label(item)}: {item["port"]}' for item in proxy_config.listeners(config, configured=True))
+            title += '\nNew port: add listener. Existing port: edit listener.'
+            options.insert(3, ('4', 'Remove one proxy port', 'remove-listener'))
+        action = self.m.choose(title, options)
         if action is None:
+            return
+        if action == 'remove-listener':
+            entries = proxy_config.listeners(config, configured=True)
+            number = self.m.choose('REMOVE PROXY LISTENER',
+                [(str(index), f'{proxy_config.label(entry)}: {entry["port"]}', entry['port'])
+                 for index, entry in enumerate(entries, 1)] + [('0', 'Back', None)])
+            if number is not None:
+                if 'tls' in config['enabled'] and config.get('tls_backend', 'tunnel') == 'tunnel' and config['tunnel_port'] == number:
+                    raise ValueError('Change or disable the SSL WebSocket backend before removing this port.')
+                config['proxy_listeners'] = [entry for entry in entries if entry['port'] != number]
+                self.m.save(config)
+                if config['proxy_listeners']:
+                    self.m.run('systemctl', 'restart', self.m.SERVICES['tunnel'])
+                else:
+                    self.m.run('systemctl', 'disable', '--now', self.m.SERVICES['tunnel'])
+                    config['enabled'] = [item for item in config['enabled'] if item != 'tunnel']
+                    self.m.save(config)
+                print(f'Removed proxy listener on TCP {number}.')
             return
         if action == 'app-limit':
             limit = int(input(f'Online App limit [{config.get("online_app_limit", 2500)}]: ') or config.get('online_app_limit', 2500))
@@ -334,6 +382,14 @@ class Classic:
             if transport is None:
                 return
             config['openvpn_client_transport'] = transport
+            if transport in ('proxy', 'custom-app'):
+                entries = [entry for entry in proxy_config.listeners(config) if 'openvpn' in entry['backends']]
+                if len(entries) > 1:
+                    number = self.m.choose('OPENVPN PROXY PORT', [(str(index), str(entry['port']), entry['port'])
+                        for index, entry in enumerate(entries, 1)] + [('0', 'Back', None)])
+                    if number is None:
+                        return
+                    config['openvpn_client_proxy_port'] = number
             if not config['endpoint']:
                 self.public_endpoint(config)
             self.m.save(config)

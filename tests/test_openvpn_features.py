@@ -21,6 +21,7 @@ import online
 import profile_links
 import shared_keys
 import tunnel
+import proxy_config
 
 
 class ShortCredentials(unittest.TestCase):
@@ -141,6 +142,27 @@ class Profiles(unittest.TestCase):
 
 
 class ProxyAndBanner(unittest.TestCase):
+    def test_separate_vpn_and_ssh_ports_survive_reconfiguration(self):
+        config = {'enabled': ['tunnel'], 'tunnel_port': 8880, 'openvpn_port': 1194,
+                  'proxy_backends': ['openvpn'], 'proxy_default_backend': 'ssh'}
+        with patch.object(manager, 'Path') as path, patch.object(manager, 'free_port'), \
+             patch.object(manager, 'configure'), patch.object(manager, 'run'), contextlib.redirect_stdout(io.StringIO()):
+            path.return_value.exists.return_value = True
+            manager.configure_proxy(config, 2086, ['ssh'])
+            config['tunnel_port'] = 2086
+            manager.configure_proxy(config, 8880, ['openvpn'])
+        self.assertEqual({entry['port']: entry['backends'] for entry in proxy_config.listeners(config)},
+                         {8880: ['openvpn'], 2086: ['ssh']})
+        self.assertEqual(proxy_config.port_for(config, 'openvpn'), 8880)
+        self.assertEqual(proxy_config.port_for(config, 'ssh'), 2086)
+
+    def test_banner_labels_distinguish_all_four_user_services(self):
+        config = {'enabled': ['openvpn', 'tunnel', 'tls'], 'openvpn_port': 1194,
+                  'tls_port': 443, 'tls_backend': 'openvpn', 'proxy_listeners': [
+                      {'port': 8880, 'backends': ['openvpn']}, {'port': 2086, 'backends': ['ssh']}]}
+        text = '\n'.join(f'tcp LISTEN 0 128 0.0.0.0:{port} 0.0.0.0:*' for port in (1194, 8880, 2086, 443, 56001))
+        self.assertEqual(classic.connection_services(config, text), {'tcp': [
+            ('OpenVPN', 1194), ('OpenVPN WebSocket', 8880), ('SSH WebSocket', 2086), ('OpenVPN SSL', 443)], 'udp': []})
     def test_endpoint_detection_and_enter_default(self):
         response = Mock()
         response.__enter__ = Mock(return_value=response)

@@ -106,7 +106,7 @@ class Tunnel(unittest.IsolatedAsyncioTestCase):
             task = asyncio.current_task()
             self.handlers.add(task)
             try:
-                await tunnel.handle(reader, writer, {'/ssh': self.backend})
+                await tunnel.handle(reader, writer, {'/': self.backend, '/ssh': self.backend})
             finally:
                 self.handlers.discard(task)
         self.server = await asyncio.start_server(handle, '127.0.0.1', 0)
@@ -154,6 +154,34 @@ class Tunnel(unittest.IsolatedAsyncioTestCase):
                 size = struct.unpack('!H', await reader.readexactly(2))[0]
             received += await reader.readexactly(size)
         self.assertEqual(received, data)
+        writer.close()
+        await writer.wait_closed()
+
+    async def test_user_double_header_payload_is_not_forwarded_as_vpn_data(self):
+        for split in (False, True):
+            reader, writer = await self.connect()
+            first = b'CONNECT / HTTP/1.1\r\nHost: dl.dir.freefiremobile.com\r\n\r\n'
+            second = b'CF-RAY / HTTP/1.1\r\nHost: vpn.example.com\r\nUpgrade: Mozilla/5.0\r\n\r\n'
+            data = b'\x00\x14\x38\x00\xffVPN binary bytes'
+            writer.write(first + (b'' if split else second + data))
+            await writer.drain()
+            self.assertIn(b'200 Connection Established', await reader.readuntil(b'\r\n\r\n'))
+            if split:
+                for part in (second[:2], second[2:20], second[20:] + data):
+                    writer.write(part)
+                    await writer.drain()
+                    await asyncio.sleep(.01)
+            self.assertEqual(await asyncio.wait_for(reader.readexactly(len(data)), 2), data)
+            writer.close()
+            await writer.wait_closed()
+
+    async def test_connect_root_preserves_raw_binary_without_extra_header(self):
+        reader, writer = await self.connect()
+        data = b'\x00\x38\x38\x00\xffbinary'
+        writer.write(b'CONNECT / HTTP/1.1\r\nHost: vpn.example.com\r\n\r\n' + data)
+        await writer.drain()
+        await reader.readuntil(b'\r\n\r\n')
+        self.assertEqual(await asyncio.wait_for(reader.readexactly(len(data)), 2), data)
         writer.close()
         await writer.wait_closed()
 

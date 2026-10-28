@@ -236,6 +236,16 @@ key or stored user passwords. Open the download port in the host/provider firewa
 
 10 → 05 selects SSH, OpenVPN or both (default both). Missing SSH is created on
 loopback TCP 2222 without modifying administrator SSH; OpenVPN is configured as TCP.
+Each setup adds or edits **one port** without replacing other proxy listeners.
+For separate services, configure port **8880 → OpenVPN**, then **2086 → SSH**.
+Both listeners run together, and `.ovpn` proxy/app exports select an OpenVPN-capable
+port rather than whichever listener was edited last. With multiple OpenVPN-capable
+listeners, the export menu lets you choose. Option 4 removes one proxy port;
+Disable service stops all proxy listeners. Existing single-port configurations are
+read automatically; a port overwritten by an older release must be added again.
+For **OpenVPN SSL 443**, set 10 → 06's backend to **OpenVPN**. In a custom app,
+enable its outer SSL/TLS wrapper and trust a valid server certificate; use a direct
+OVPN profile with the app's SSL port override, without a WS/HTTP payload.
 Use `/ssh`, `/openvpn`, or a local HTTP CONNECT target. Legacy `X-Real-Host` headers
 are limited to the enabled local SSH/OpenVPN ports. The exported HTTP proxy profile
 uses standard CONNECT to the OpenVPN backend, so a raw WebSocket adapter is unnecessary.
@@ -245,9 +255,32 @@ configured local backend. Carrier paths without a target use the selected defaul
 explicit `/ssh` and `/openvpn` require that backend to be enabled.
 Real framed RFC 6455 WebSockets remain supported.
 
+Legacy app payloads with `CONNECT /` followed by a second `CF-RAY / HTTP/1.1`
+header are handled as a single raw tunnel. The second HTTP preface is consumed,
+including when split across TCP packets; it is not forwarded into SSH/OpenVPN data.
+This behavior is separate from framed RFC 6455 WebSocket mode.
+
+The app's **proxy hostname must resolve to this VPS** for a direct connection.
+DNS-only mode still uses the IP stored in its A/AAAA record: check that the actual
+proxy hostname points to the VPS, not another origin or a Cloudflare edge address.
+An HTTP 521 response indicates an upstream origin failure, not a successful tunnel;
+replacing the response text with 200 in the app cannot repair the connection.
+Test with the VPS IP and the appropriate proxy port before adding any intermediate proxy.
+
 IP/domain prompts offer the saved endpoint, otherwise the detected public VPS IP;
 press Enter to accept it. If external detection is unavailable, enter it manually.
-The menu banner filters actual listeners to Connection Mode services, excluding
+The menu banner names each actual Connection Mode listener, for example:
+
+```text
+TCP Ports:
+  OpenVPN: 1194
+  OpenVPN WebSocket: 8880
+  SSH WebSocket: 2086
+  OpenVPN SSL: 443
+UDP Ports: (none)
+```
+
+It excludes
 unrelated/ephemeral ports, the Online App port, and private SSH helper listeners.
 OpenVPN/proxy setup checks that its TCP listener opened before reporting success;
 startup failures include recent service journal messages. Updates restart running

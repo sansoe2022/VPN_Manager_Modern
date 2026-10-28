@@ -40,6 +40,27 @@ async def relay(reader, writer):
         await writer.drain()
 
 
+async def legacy_relay(reader, writer):
+    """Consume the extra CF-RAY preface in legacy CONNECT / app payloads."""
+    marker = b'CF-RAY '
+    prefix = b''
+    while len(prefix) < len(marker):
+        part = await reader.read(1)
+        if not part:
+            return
+        prefix += part
+        if not marker.startswith(prefix):
+            writer.write(prefix)
+            await writer.drain()
+            await relay(reader, writer)
+            return
+    rest = await asyncio.wait_for(reader.readuntil(b'\r\n\r\n'), 10)
+    header = prefix + rest
+    if len(header) > 16384 or not re.fullmatch(rb'CF-RAY /[^\r\n ]* HTTP/1\.[01]', header.split(b'\r\n', 1)[0]):
+        raise ValueError('Invalid legacy CF-RAY preface')
+    await relay(reader, writer)
+
+
 async def ws_to_tcp(reader, target, client):
     while True:
         opcode, data = await frame(reader)
@@ -117,7 +138,7 @@ async def handle(reader, writer, backends):
                 headers[key.lower()] = value.strip()
         # Legacy destination headers are limited to configured SSH/OpenVPN backends.
         backend = select_backend(method, path, headers, backends)
-        if method not in ('GET', 'CONNECT') or not version.startswith('HTTP/1.') or backend is None:
+        if method not in ('GET', 'CONNECT', 'CF-RAY') or not version.startswith('HTTP/1.') or backend is None:
             writer.write(b'HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n')
             await writer.drain()
             return
@@ -145,7 +166,8 @@ async def handle(reader, writer, backends):
         if key:
             tasks = [asyncio.create_task(ws_to_tcp(reader, target, writer)), asyncio.create_task(tcp_to_ws(upstream, writer))]
         else:
-            tasks = [asyncio.create_task(relay(reader, target)), asyncio.create_task(relay(upstream, writer))]
+            incoming = legacy_relay(reader, target) if method == 'CONNECT' and path == '/' else relay(reader, target)
+            tasks = [asyncio.create_task(incoming), asyncio.create_task(relay(upstream, writer))]
         done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for task in done:
             task.result()
@@ -183,3 +205,16 @@ async def serve(host, port, ssh_port, openvpn_port, enabled=('ssh', 'openvpn'), 
     server = await asyncio.start_server(limited, host, port, limit=16384)
     async with server:
         await server.serve_forever()
+
+
+async def serve_listeners(host, listeners, ssh_port, openvpn_port):
+    if not listeners:
+        raise ValueError('No proxy listeners configured. Use menu 10 -> 05.')
+    tasks = [asyncio.create_task(serve(host, entry['port'], ssh_port, openvpn_port,
+                                     entry['backends'], entry['default'])) for entry in listeners]
+    try:
+        await asyncio.gather(*tasks)
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
