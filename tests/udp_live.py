@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import shutil
 import socket
+import signal
 import socketserver
 import subprocess
 import sys
@@ -58,7 +59,7 @@ udp = socketserver.ThreadingUDPServer(('127.0.0.1', 9002), UDP)
 for service in (tcp, udp):
     threading.Thread(target=service.serve_forever, daemon=True).start()
 server_log = open('/tmp/udp-server.log', 'w')
-server = subprocess.Popen(['python3', '/usr/local/lib/vpnmanager/manager.py', 'serve-udp'], stdout=server_log, stderr=subprocess.STDOUT)
+server = subprocess.Popen(['python3', '/usr/local/lib/vpnmanager/manager.py', 'serve-udp'], stdout=server_log, stderr=subprocess.STDOUT, start_new_session=True)
 client = None
 
 def connect(password):
@@ -74,7 +75,14 @@ def connect(password):
     return process
 
 try:
-    time.sleep(.5)
+    for _ in range(150):
+        if manager.capture('ss','-H','-lun','sport','=','36712'):
+            break
+        if server.poll() is not None:
+            raise AssertionError('UDP server exited during startup')
+        time.sleep(.1)
+    else:
+        raise AssertionError('UDP server did not open its test listener')
     # Loopback test traffic traverses OUTPUT instead of the external PREROUTING hook.
     subprocess.run(['iptables','-t','nat','-A','OUTPUT','-p','udp','-d','127.0.0.1','-j','VPNMANAGER_UDP'],check=True)
     client = connect('1')
@@ -137,8 +145,14 @@ finally:
     subprocess.run(['iptables','-t','nat','-D','OUTPUT','-p','udp','-d','127.0.0.1','-j','VPNMANAGER_UDP'],check=False)
     for process in (client, server):
         if process and process.poll() is None:
-            process.terminate()
+            if process is server:
+                os.killpg(process.pid, signal.SIGTERM)
+            else:
+                process.terminate()
             try: process.wait(timeout=5)
             except subprocess.TimeoutExpired: process.kill(); process.wait()
     server_log.close()
     for service in (tcp, udp): service.shutdown(); service.server_close()
+
+assert server.returncode == 0, 'Intentional UDP process-group shutdown returned ' + str(server.returncode)
+print('PASS systemd-style SIGTERM to supervisor and native child exits successfully, not 241', flush=True)

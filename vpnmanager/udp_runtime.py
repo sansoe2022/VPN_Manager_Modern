@@ -250,7 +250,10 @@ def _serve(m):
     m.write(runtime, json.dumps(data))
     process = subprocess.Popen([str(BINARY), '--no-check', '--log-format', 'json', '--log-level', 'info',
                                 'server', '-c', str(runtime)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    stopping = False
     def stop(*args):
+        nonlocal stopping
+        stopping = True
         if process.poll() is None:
             process.terminate()
     for name in (signal.SIGTERM, signal.SIGINT):
@@ -275,10 +278,13 @@ def _serve(m):
                     print(message + ': ' + str(event.get('error', '')), flush=True)
             except (ValueError, TypeError):
                 continue
-        return process.wait()
+        result = process.wait()
+        # sys.exit(-SIGTERM) becomes 241, misleadingly named CONFIGURATION_DIRECTORY.
+        return 0 if stopping else (128 - result if result < 0 else result)
     finally:
         stop()
         process.wait(timeout=5)
+        process.stdout.close()
         with lock:
             connected.clear()
             save()

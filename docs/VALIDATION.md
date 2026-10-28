@@ -128,3 +128,11 @@ hooks included. A compatibility run keeps the previous published manager worker
 (`48ebb7d`) on disk and uses the standalone admission helper; all shared limit and
 administrator bypass cases still pass. This avoids depending on newer CLI command
 names when an older full backup restores its manager source.
+
+UDP restart regression: 67 unit checks include a listener appearing after seven
+simulated seconds, immediate reporting of a failed service with current-attempt
+logs, and preservation of a real native exit code 7. The native UDP test sends
+SIGTERM to the entire supervisor/child process group, matching systemd's default
+control-group stop, and requires supervisor exit 0 instead of 241. The actual
+service start/polling state is simulated; native QUIC, shared-account checks and
+process-group signal delivery are real.

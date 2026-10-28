@@ -406,3 +406,22 @@ the admission helper at the PAM stack, and managed-account hooks are removed on
 uninstall. Toggling the limiter does not restart SSH/UDP or an already migrated
 OpenVPN server. If a lowered limit requires ejecting an existing UDP session,
 Hysteria v1 requires a UDP daemon restart; other UDP clients briefly reconnect.
+
+## UDP restart reports 241 or the listener starts slowly
+
+A deliberate supervisor/native-child SIGTERM now exits successfully. Previously
+Python returned the native child's negative signal code directly; `-15` became
+exit status 241, which systemd misleadingly labels `CONFIGURATION_DIRECTORY`.
+Unexpected native failures still propagate as errors. UDP listener readiness now
+waits up to 45 seconds, with progress every five seconds, rather than the previous
+three-second window. A failed/inactive unit aborts immediately, and errors include
+only journal entries since the current start attempt.
+
+Update using the public installer again. If the service still cannot open its port,
+collect its recent logs and socket state:
+
+```bash
+sudo systemctl status vpnmanager-udp --no-pager
+sudo journalctl -u vpnmanager-udp --since '-2 minutes' -n 80 --no-pager
+sudo ss -H -lun 'sport = :36712'
+```

@@ -270,27 +270,46 @@ def free_port(number):
         raise ValueError(f'TCP port {number} is in use. Stop its owner or choose another port.')
 
 
+def service_logs(unit, since):
+    return capture('journalctl', '-u', unit, '--since', '@' + str(since), '-n', '40', '--no-pager', '-o', 'cat')
+
+
+def wait_listener(name, unit, number, since):
+    protocol = 'UDP' if name == 'udp' else 'TCP'
+    timeout = 45 if name == 'udp' else 20
+    began = time.monotonic()
+    deadline = began + timeout
+    report = began + 5
+    while True:
+        if capture('ss', '-H', '-lun' if name == 'udp' else '-ltn', 'sport', '=', str(number)):
+            return
+        state = capture('systemctl', 'show', unit, '--property=ActiveState', '--value')
+        now = time.monotonic()
+        if state in ('failed', 'inactive') or now >= deadline:
+            details = service_logs(unit, since)
+            raise ValueError(f'{name} did not open {protocol} {number} (service: {state or "unknown"}).\n{details}')
+        if now >= report:
+            print(f'Waiting for {protocol} {number}... {int(now - began)}s / {timeout}s', flush=True)
+            report = now + 5
+        time.sleep(.2)
+
+
 def start(name, config):
     unit = SERVICES[name]
+    since = int(time.time())
     run('systemctl', 'daemon-reload')
     run('systemctl', 'enable', unit)
     try:
         run('systemctl', 'restart', unit)
         run('systemctl', 'is-active', '--quiet', unit)
     except subprocess.CalledProcessError:
-        details = capture('journalctl', '-u', unit, '-n', '15', '--no-pager', '-o', 'cat')
+        details = service_logs(unit, since)
         raise ValueError(f'{name} failed to start.\n{details}') from None
     numbers = [entry['port'] for entry in proxy_config.listeners(config, configured=True)] if name == 'tunnel' else [config[name + '_port']]
     protocol = 'UDP' if name == 'udp' else 'TCP'
     if name in ('openvpn', 'tunnel', 'udp'):
         for number in numbers:
-            for _ in range(30):
-                if capture('ss', '-H', '-lun' if name == 'udp' else '-ltn', 'sport', '=', str(number)):
-                    break
-                time.sleep(0.1)
-            else:
-                details = capture('journalctl', '-u', unit, '-n', '15', '--no-pager', '-o', 'cat')
-                raise ValueError(f'{name} did not open {protocol} {number}.\n{details}')
+            wait_listener(name, unit, number, since)
     config['enabled'] = sorted(set(config['enabled']) | {name})
     save(config)
     print(f'{name} started on {protocol} {", ".join(map(str, numbers))}. Allow these ports in your host/provider firewall.')
