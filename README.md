@@ -33,6 +33,7 @@ The banner separates TCP/UDP ports, shows API links and green ON/red OFF states.
 User lists use narrow-screen cards. IP/domain prompts default to the
 current detected VPS IP. Menu source and launchers are unencrypted.
 
+UDP supports `svpn` obfuscation and port hopping `10000–65000 → 36712` (or your configured backend port). Use `username:password` for client authentication.
 UDP restore updates SNI/certificate names to the chosen current IP/DNS while preserving its CA/keys.
 OpenVPN keeps the original shared keys. Full backups include source, keys, managed
 accounts, service configs, optional binaries and x-ui data. Restore on the same CPU
@@ -40,3 +41,5 @@ architecture; a fresh VPS still needs systemd, network access and required kerne
 Open provider/host ports yourself; OpenVPN needs `/dev/net/tun`.
 
 [Guide](docs/GUIDE.md) · [Backup / migration](docs/MIGRATION.md) · [Validation](docs/VALIDATION.md)
+
+Menu **12** sends SSH/Dropbear login banners and OpenVPN ECHO messages; client apps control ECHO display. All menus clear the terminal on entry; `udpmanager` opens the integrated UDP menu.

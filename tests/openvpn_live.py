@@ -3,6 +3,7 @@ import asyncio
 import contextlib
 import os
 import ssl
+import socket
 from pathlib import Path
 import struct
 import subprocess
@@ -105,6 +106,7 @@ async def main():
         manager.initialize()
         config = manager.load()
         config['endpoint'] = '127.0.0.1'
+        manager.write('/etc/vpnmanager/banner', '<h3>VPN test banner</h3>\n', 0o644)
         manager.create_user('vpnhandshake', 1, secret='1')
         manager.configure_proxy(config, PROXY_PORT, ['openvpn'])
         manager.configure_proxy(config, SSH_PROXY_PORT, ['ssh'])
@@ -114,8 +116,21 @@ async def main():
         manager.save(config)
     manager.write('/tmp/live-auth', 'vpnhandshake\n1\n')
     server = subprocess.Popen(['openvpn', '--cd', '/etc/openvpn/server', '--config', 'vpnmanager.conf', '--log', '/tmp/live-server.log'])
+    # First activation persists the listeners before start() marks tunnel enabled.
+    config['enabled'].remove('tunnel')
+    manager.save(config)
     proxy_log = open('/tmp/live-proxy.log', 'w')
     proxy = subprocess.Popen(['python3', str(Path(manager.__file__)), 'serve-tunnel'], stdout=proxy_log, stderr=subprocess.STDOUT)
+    for _ in range(60):
+        await asyncio.sleep(.1)
+        if manager.capture('ss','-H','-ltn','sport','=',str(PROXY_PORT)):
+            break
+        if proxy.poll() is not None:
+            raise AssertionError('First proxy startup failed: '+Path('/tmp/live-proxy.log').read_text())
+    else:
+        raise AssertionError('First proxy listener did not start')
+    config['enabled'].append('tunnel')
+    manager.save(config)
     ssh_log = open('/tmp/live-ssh.log', 'w')
     sshd = subprocess.Popen(['/usr/sbin/sshd', '-D', '-e', '-f', '/etc/vpnmanager/sshd_config'], stdout=ssh_log, stderr=subprocess.STDOUT)
     tls = subprocess.Popen(['/usr/bin/stunnel', '/etc/vpnmanager/stunnel.conf'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -146,13 +161,21 @@ async def main():
                 port = PROXY_PORT if mode == 'legacy' else 1194
                 profile = profile.replace(f'remote 127.0.0.1 {port}', f'remote 127.0.0.1 {ADAPTER_PORT}')
             manager.write('/tmp/live-' + mode + '.ovpn', profile)
-            client = subprocess.Popen(['openvpn', '--config', '/tmp/live-' + mode + '.ovpn', '--auth-user-pass', '/tmp/live-auth', '--route-noexec', '--ifconfig-noexec', '--log', str(log)])
+            client = subprocess.Popen(['openvpn', '--config', '/tmp/live-' + mode + '.ovpn', '--auth-user-pass', '/tmp/live-auth', '--route-noexec', '--ifconfig-noexec', '--management', '/tmp/live-echo', 'unix', '--log', str(log)])
             try:
                 for _ in range(120):
                     await asyncio.sleep(.25)
                     text = log.read_text() if log.exists() else ''
                     if 'Initialization Sequence Completed' in text:
-                        print('PASS real OpenVPN TLS/PAM/TUN: ' + mode, flush=True)
+                        with socket.socket(socket.AF_UNIX) as control:
+                            control.settimeout(3)
+                            control.connect('/tmp/live-echo')
+                            control.sendall(b'echo all\n')
+                            messages = b''
+                            while b'END' not in messages:
+                                messages += control.recv(4096)
+                            assert b'VPN test banner' in messages, 'OpenVPN banner ECHO missing'
+                        print('PASS real OpenVPN TLS/PAM/TUN and banner ECHO: ' + mode, flush=True)
                         assert ssh_client.poll() is None, 'SSH WS session lost during OpenVPN connection'
                         break
                     if client.poll() is not None:

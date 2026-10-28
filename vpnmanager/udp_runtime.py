@@ -132,9 +132,11 @@ def configure(m, config, number):
     cert, key = certificates(m, endpoint)
     data = {'listen': f'{config.get("host", "0.0.0.0")}:{number}', 'protocol': 'udp', 'cert': str(cert), 'key': str(key),
             'up_mbps': config.get('udp_up_mbps', 100), 'down_mbps': config.get('udp_down_mbps', 100),
-            'obfs': config.get('udp_obfs', ''), 'auth': {'mode': 'external', 'config': {}}}
+            'obfs': config.get('udp_obfs') or 'svpn', 'auth': {'mode': 'external', 'config': {}}}
     m.write(CONFIG, json.dumps(data, indent=2))
     print('[2/3] Configuring shared account authentication...', flush=True)
+    config['udp_obfs'] = data['obfs']
+    config.setdefault('udp_port_range', '10000-65000')
     config['udp_port'] = number
     config['udp_server_name'] = endpoint
     m.save(config)
@@ -143,7 +145,59 @@ def configure(m, config, number):
     print('[3/3] UDP enabled. Existing SSH/OpenVPN users can authenticate as username:password.', flush=True)
 
 
+def hopping(m, config, remove=False):
+    """Own only our NAT chain; preserve ports already bound by other UDP services."""
+    chain = 'VPNMANAGER_UDP'
+    tools = ['iptables']
+    if Path('/proc/net/if_inet6').exists() and Path('/proc/net/if_inet6').read_text().strip():
+        tools.append('ip6tables')
+    for tool in tools:
+        def call(*args, required=True):
+            result = subprocess.run([tool, '-w', '5', '-t', 'nat', *args], capture_output=True, text=True)
+            if required and result.returncode:
+                raise ValueError(f'UDP port hopping: {tool}: {result.stderr.strip()}')
+            return result.returncode == 0
+        if tool == 'ip6tables' and not call('-L', required=False):
+            if not remove:
+                print('IPv6 NAT unavailable; UDP hopping remains available over IPv4.', flush=True)
+            continue
+        if remove:
+            if call('-C', 'PREROUTING', '-p', 'udp', '-j', chain, required=False):
+                call('-D', 'PREROUTING', '-p', 'udp', '-j', chain)
+            call('-F', chain, required=False)
+            call('-X', chain, required=False)
+            continue
+        number = m.port(config['udp_port'])
+        low, high = map(int, config.get('udp_port_range', '10000-65000').split('-'))
+        if not 1 <= low <= high <= 65535:
+            raise ValueError('Invalid UDP hopping range.')
+        call('-N', chain, required=False)
+        call('-F', chain)
+        output = m.capture('ss', '-H', '-lun')
+        ports = set()
+        for line in output.splitlines():
+            try:
+                ports.add(int(line.split()[3].rsplit(':', 1)[1]))
+            except (ValueError, IndexError):
+                continue
+        for port in sorted(ports - {number}):
+            if low <= port <= high:
+                call('-A', chain, '-p', 'udp', '--dport', str(port), '-j', 'RETURN')
+        call('-A', chain, '-p', 'udp', '--dport', f'{low}:{high}', '-j', 'REDIRECT', '--to-ports', str(number))
+        if not call('-C', 'PREROUTING', '-p', 'udp', '-j', chain, required=False):
+            call('-A', 'PREROUTING', '-p', 'udp', '-j', chain)
+
+
 def serve(m):
+    config = m.load()
+    try:
+        hopping(m, config)
+        return _serve(m)
+    finally:
+        hopping(m, config, remove=True)
+
+
+def _serve(m):
     STATE.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     pending, connected = {}, {}
     lock = threading.RLock()

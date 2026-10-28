@@ -296,6 +296,9 @@ def rebuild(m, manifest=None):
     for unit, enabled_at_boot in manifest.get('unit_states', {}).items():
         if not enabled_at_boot and (unit.startswith('vpnmanager-') or unit == 'x-ui.service'):
             m.run('systemctl', 'disable', unit)
+    import login_banner
+    if login_banner.BANNER.exists() and login_banner.BANNER.read_text().strip():
+        login_banner.apply(m, login_banner.BANNER.read_text().rstrip('\n'))
     print('[4/4] Services restored. Update DNS and provider firewall rules for this VPS.', flush=True)
 
 

@@ -160,6 +160,8 @@ class Classic:
         number = config.get('udp_port', 36712)
         on = 'udp' in config['enabled'] and number in actual['udp'] and self.active(self.m.SERVICES['udp'])
         result['udp'].append(('Hysteria UDP', number, on))
+        if config.get('udp_port'):
+            result['udp'].append(('UDP hopping', config.get('udp_port_range', '10000-65000'), on))
         return result
 
     def links(self, config, output):
@@ -176,7 +178,7 @@ class Classic:
 
     def clear(self):
         if sys.stdout.isatty():
-            print('\033[2J\033[H', end='', flush=True)
+            print('\033[2J\033[H\033[3J', end='', flush=True)
 
     def page(self, title):
         self.clear()
@@ -584,7 +586,7 @@ class Classic:
             self.pause()
 
     def banner(self):
-        action = self.m.choose('SSH LOGIN BANNER', [('1', 'Set banner', 'set'), ('2', 'Remove banner', 'remove'), ('0', 'Back', None)])
+        action = self.m.choose('SSH / OPENVPN LOGIN BANNER', [('1', 'Set banner', 'set'), ('2', 'Remove banner', 'remove'), ('0', 'Back', None)])
         if action is None:
             return
         value = input('Banner text: ') if action == 'set' else ''
@@ -595,15 +597,8 @@ class Classic:
             if not 1 <= size <= 6 or not re.fullmatch(r'[a-zA-Z]+|#[0-9a-fA-F]{6}', color):
                 raise ValueError('Invalid heading size or color.')
             value = f'<h{size}><font color="{color}">{html.escape(value)}</font></h{size}>'
-        self.m.write('/etc/vpnmanager/banner', value + '\n', 0o644)
-        if Path('/etc/vpnmanager/sshd_config').exists():
-            path = Path('/etc/vpnmanager/sshd_config')
-            text = '\n'.join(row for row in path.read_text().splitlines() if not row.startswith('Banner '))
-            self.m.write(path, text + '\nBanner /etc/vpnmanager/banner\n')
-            self.m.run('/usr/sbin/sshd', '-t', '-f', str(path))
-            self.m.run('systemctl', 'reload-or-restart', 'vpnmanager-sshd')
-        if 'dropbear' in self.m.load()['enabled']:
-            self.m.run('systemctl', 'restart', 'vpnmanager-dropbear')
+        import login_banner
+        login_banner.apply(self.m, value)
         print('Banner saved.')
 
     def traffic(self):
@@ -725,7 +720,7 @@ class Classic:
             if path.is_file() and path.name not in ('vpnmanager-firewall.service', 'vpnmanager-torrent.service'):
                 path.unlink()
         self.m.run('systemctl', 'daemon-reload')
-        for name in ('vpnmanager', 'vpnmenu', 'menu'):
+        for name in ('vpnmanager', 'vpnmenu', 'menu', 'udpmanager'):
             Path('/usr/local/bin', name).unlink(missing_ok=True)
         shutil.rmtree('/usr/local/lib/vpnmanager')
         self.removed = True
@@ -780,6 +775,15 @@ class Classic:
         elif action == 'menu':
             self.m.run('x-ui')
 
+    def udp_menu(self):
+        while True:
+            try:
+                if self.udp() is None:
+                    return
+            except (ValueError, OSError, subprocess.SubprocessError) as error:
+                print(f'Error: {error}')
+            self.pause()
+
     def udp(self):
         import udp_runtime
         config = self.m.load()
@@ -790,7 +794,7 @@ class Classic:
             if not config.get('endpoint'):
                 self.public_endpoint(config)
             number = self.m.port(input(f'UDP port [{config.get("udp_port", 36712)}]: ') or config.get('udp_port', 36712))
-            config['udp_obfs'] = input(f'Obfuscation [{config.get("udp_obfs", "")}]: ') or config.get('udp_obfs', '')
+            config['udp_obfs'] = input(f'Obfuscation [{config.get("udp_obfs") or "svpn"}]: ') or config.get('udp_obfs') or 'svpn'
             udp_runtime.configure(self.m, config, number)
         elif action == 'disable':
             self.m.run('systemctl', 'disable', '--now', self.m.SERVICES['udp'])
@@ -799,9 +803,12 @@ class Classic:
         elif action == 'client':
             print(f'Server: {config.get("endpoint")}; UDP port: {config.get("udp_port", 36712)}')
             print('Hysteria v1; auth: username:password (same account as SSH/OpenVPN).')
-            print('Obfuscation: ' + config.get('udp_obfs', ''))
+            print('Obfuscation: ' + (config.get('udp_obfs') or 'svpn'))
+            print('Port hopping: ' + config.get('udp_port_range', '10000-65000'))
+            print('SVPN auth_str / [user] must contain username:password, not username alone.')
             print('SNI: ' + config.get('udp_server_name', config.get('endpoint', '')))
             print('CA certificate: /etc/vpnmanager/udp-ca.crt')
+        return action
 
     def checkuser(self):
         config = self.m.load()

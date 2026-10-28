@@ -23,6 +23,7 @@ import accounts
 import private_backup
 import profile_links
 import online
+import login_banner
 
 subprocess.run(['python3', '/src/tests/bootstrap_smoke.py'], check=True)
 
@@ -56,6 +57,11 @@ with patch.object(manager, 'run', side_effect=run):
     subprocess.run(['systemd-analyze', 'verify', *map(str, Path('/etc/systemd/system').glob('vpnmanager*'))], check=True)
     config = manager.load()
     manager.configure_ssh(config, 2222)
+    login_banner.apply(manager, '<h3>VPN test banner</h3>')
+    login_banner.apply(manager, '<h3>VPN test banner</h3>')
+    assert Path('/etc/ssh/sshd_config').read_text().count(login_banner.MARKER) == 1
+    effective = manager.capture('/usr/sbin/sshd','-T','-f','/etc/ssh/sshd_config')
+    assert 'banner /etc/vpnmanager/banner' in effective
     Path('/run/sshd').mkdir(exist_ok=True)
     sshd = subprocess.Popen(['/usr/sbin/sshd', '-D', '-e', '-f', '/etc/vpnmanager/sshd_config'])
     processes = [sshd]
@@ -64,7 +70,7 @@ with patch.object(manager, 'run', side_effect=run):
             manager.create_user('vpntest', 7)
         manager.create_user('a', 1, secret='1')
         assert accounts.verify_password('a', '1')
-        short = subprocess.Popen(['sshpass', '-p', '1', 'ssh', '-N', '-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null', '-p', '2222', 'a@127.0.0.1'])
+        short = subprocess.Popen(['sshpass', '-p', '1', 'ssh', '-N', '-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null', '-p', '2222', 'a@127.0.0.1'], stderr=subprocess.PIPE, text=True)
         processes.append(short)
         for _ in range(40):
             time.sleep(0.1)
@@ -74,6 +80,7 @@ with patch.object(manager, 'run', side_effect=run):
             raise AssertionError('Single-character account/password login failed')
         manager.disconnect('a')
         short.wait(timeout=5)
+        assert 'VPN test banner' in short.stderr.read(), 'SSH login banner missing'
         # Real password authentication with the configured no-shell account.
         client = subprocess.Popen(['sshpass', '-p', 'Test-password-47', 'ssh', '-N',
                                    '-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null',

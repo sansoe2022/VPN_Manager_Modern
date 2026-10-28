@@ -129,7 +129,7 @@ password SSH login. OpenVPN additionally requires `/dev/net/tun`.
   or locked sessions every minute. The optional limiter checks every 15 seconds and
   disconnects an account exceeding its limit across SSH, Dropbear, OpenVPN and UDP.
   Forwarding accounts have no interactive shell; use SSH forwarding/no-session mode.
-- **Banner/traffic/optimization:** text or HTML SSH banner, network byte totals,
+- **Banner/traffic/optimization:** text or HTML SSH/Dropbear banner and OpenVPN ECHO, network byte totals,
   package repair/cache cleanup, optional package upgrades and BBR when the host kernel supports it.
 - **Backup:** complete manager/application migration with source, keys, credentials,
   optional service binaries and x-ui data. Menu 15 → 03 publishes an encrypted expiring
@@ -317,7 +317,7 @@ Its native binary comes from the pinned upstream release with a SHA-256 check;
 there is no install-key server/loader, second users database, Redis, or separate
 online web server. Create a user once in 01/02 (or a bot): SSH, OpenVPN and UDP
 use the same account. Hysteria v1 client auth is `username:password`; choose the
-configured UDP port (default 36712), obfuscation and current IP/DNS as SNI. Trust the server's
+configured UDP port (default 36712), obfuscation (default `svpn`) and current IP/DNS as SNI. Port hopping `10000–65000` redirects to that port, matching the original UDP script; an SVPN server field `[host]:10000-50000` is supported. The app authentication field must resolve to `username:password`. Allow the UDP range in the VPS/provider firewall when using it. Existing UDP listeners in the range are excluded when the service starts. Manager-owned NAT rules are removed when UDP stops; other firewall chains are preserved. Trust the server's
 `/etc/vpnmanager/udp-ca.crt` or install a certificate valid for your domain.
 
 The supervised daemon records successful authenticated QUIC connections and
@@ -357,3 +357,19 @@ A matching server leaf certificate is issued using the saved CA and existing pri
 keys. Legacy two-file self-signed UDP setups are migrated without changing their
 trusted CA certificate or server key. Updates also refresh an already-restored UDP
 setup automatically; clients should use the current SNI shown in 10 → 09 → 03.
+
+
+## Login banner and clean pages
+
+Menu **12** applies the banner to the distribution SSH listener (including port 22),
+managed SSH and Dropbear. It validates SSH configuration before reloading; authentication
+and listening ports are retained. OpenVPN sends the same message as a post-authentication
+ECHO, which the client application must support displaying. OpenVPN's standard log
+redacts ECHO text; its management channel receives the actual message. Changing a banner
+restarts an enabled managed OpenVPN server, so existing VPN clients reconnect.
+Updates and activated restores reapply a saved nonempty banner.
+
+`menu` and `udpmanager` clear the terminal on startup. Each menu, submenu and selected
+action opens a clean page, including terminal scrollback. Status output and errors remain
+visible until Enter is pressed. `udpmanager` opens the integrated UDP menu, using the
+same accounts and services as **10 → 09**.

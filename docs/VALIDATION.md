@@ -97,3 +97,17 @@ check Basic authentication and the exact three-field CheckUser response. Install
 PTY checks include raw CRLF, whitespace and invalid-input retries. UDP certificate
 checks cover new DNS/IP SANs, unchanged CA/private-key hashes and legacy two-file
 migration; restored UDP clients verify the chosen current IP using the retained CA.
+
+
+The UDP/client-banner regression checks pass on Ubuntu 20.04/22.04/24.04/26.04
+and Debian 12/13: 58 unit checks, native SSH banner delivery (including effective
+administrator SSH Banner configuration), first proxy startup before the enabled
+flag is saved, SSH WS and all seven OpenVPN transport modes. Each native OpenVPN
+client receives the HTML banner through its ECHO management channel. The real
+Hysteria client uses `127.0.0.1:10000-50000`, default `svpn`, verified TLS and shared
+Unix credentials; TCP/UDP relay, password changes, expiry and online counts pass.
+The container's local test attaches the same NAT chain to OUTPUT, because local
+packets do not traverse external PREROUTING; the production hook is PREROUTING.
+IPv4 hopping remains usable on kernels without IPv6 NAT. Systemd/package operations
+remain simulated as described above; public firewall and mobile app display need
+VPS/client acceptance.

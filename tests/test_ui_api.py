@@ -62,7 +62,7 @@ class Layout(unittest.TestCase):
             with contextlib.redirect_stdout(io.StringIO()) as output: ui.links(config,text)
         self.assertIn(('OpenVPN',1194,False),rows['tcp'])
         self.assertIn(('Online API',81,True),rows['tcp'])
-        self.assertEqual(rows['udp'],[('Hysteria UDP',36712,True)])
+        self.assertEqual(rows['udp'],[('Hysteria UDP',36712,True),('UDP hopping','10000-65000',True)])
         self.assertIn('http://vpn.example.com:81/checkuser',output.getvalue())
         self.assertIn('/server/online_app',output.getvalue())
         with patch.object(ui,'active',return_value=False),contextlib.redirect_stdout(io.StringIO()) as output:

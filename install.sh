@@ -58,6 +58,14 @@ cat > /usr/local/bin/vpnmanager <<'WRAPPER'
 exec python3 -B /usr/local/lib/vpnmanager/manager.py "$@"
 WRAPPER
 chmod 0755 /usr/local/bin/vpnmanager
+if [[ -f /usr/local/bin/udpmanager ]] && ! head -c 128 /usr/local/bin/udpmanager | grep -q 'vpnmanager udp-menu'; then
+  cp -an /usr/local/bin/udpmanager /var/lib/vpnmanager/backups/udpmanager.before-vpnmanager
+fi
+cat > /usr/local/bin/udpmanager <<'WRAPPER'
+#!/usr/bin/env bash
+exec /usr/local/bin/vpnmanager udp-menu
+WRAPPER
+chmod 0755 /usr/local/bin/udpmanager
 for alias in menu vpnmenu; do
   if [[ -e /usr/local/bin/$alias && ! -L /usr/local/bin/$alias ]]; then
     cp -an "/usr/local/bin/$alias" "/var/lib/vpnmanager/backups/$alias.before-install"
@@ -75,6 +83,7 @@ if [[ -n "$restore_url" ]]; then
 fi
 if [[ -z "$restore_url" ]]; then
   vpnmanager refresh-udp
+  vpnmanager refresh-banner
   for service in vpnmanager-tunnel vpnmanager-online; do
     if systemctl is-active --quiet "$service"; then
       systemctl restart "$service"

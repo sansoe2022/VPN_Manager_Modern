@@ -24,6 +24,7 @@ import profile_links
 import shared_keys
 import proxy_config
 import udp_runtime
+import login_banner
 from urllib.request import urlopen
 from urllib.error import URLError
 
@@ -548,6 +549,7 @@ plugin {plugins[0]} vpnmanager
 push "redirect-gateway def1 bypass-dhcp"
 push "dhcp-option DNS 1.1.1.1"
 push "dhcp-option DNS 9.9.9.9"
+{login_banner.openvpn_option(login_banner.BANNER.read_text() if login_banner.BANNER.exists() else "")}
 keepalive 10 60
 persist-key
 persist-tun
@@ -693,7 +695,7 @@ def diagnostics(config):
 
 def clear_terminal():
     if sys.stdout.isatty():
-        print('\033[2J\033[H', end='', flush=True)
+        print('\033[2J\033[H\033[3J', end='', flush=True)
 
 
 def choose(title, options):
@@ -734,17 +736,25 @@ def menu():
 def main():
     os.environ['LC_ALL'] = 'C.UTF-8'
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', nargs='?', default='menu', choices=['menu', 'initialize', 'online', 'diagnostics', 'expire', 'serve-online', 'serve-tunnel', 'serve-udp', 'refresh-udp', 'restore', 'rebuild', 'enforce-limits', 'serve-bot', 'feature'])
+    parser.add_argument('command', nargs='?', default='menu', choices=['menu', 'udp-menu', 'initialize', 'online', 'diagnostics', 'expire', 'serve-online', 'serve-tunnel', 'serve-udp', 'refresh-udp', 'refresh-banner', 'restore', 'rebuild', 'enforce-limits', 'serve-bot', 'feature'])
     parser.add_argument('name', nargs='?', help='Feature name or bot role')
     parser.add_argument('--password-file', help='Root-private file containing the backup password')
     parser.add_argument('--endpoint', help='Public IP/domain to use after restore')
     args = parser.parse_args()
     root()
+    if args.command in ('menu', 'udp-menu', 'feature'):
+        clear_terminal()
     config = load()
-    if args.command == 'menu':
+    if args.command == 'udp-menu':
+        from classic import Classic
+        Classic(sys.modules[__name__]).udp_menu()
+    elif args.command == 'menu':
         menu()
     elif args.command == 'serve-udp':
         sys.exit(udp_runtime.serve(sys.modules[__name__]))
+    elif args.command == 'refresh-banner':
+        if login_banner.BANNER.exists() and login_banner.BANNER.read_text().strip():
+            login_banner.apply(sys.modules[__name__], login_banner.BANNER.read_text().rstrip('\n'))
     elif args.command == 'refresh-udp':
         if config.get('udp_port') and config.get('endpoint'):
             if 'udp' in config['enabled']:
@@ -781,7 +791,7 @@ def main():
     elif args.command == 'serve-online':
         online_serve(config['host'], config['online_port'])
     elif args.command == 'serve-tunnel':
-        asyncio.run(tunnel_serve(config['host'], proxy_config.listeners(config), config['ssh_port'], config['openvpn_port']))
+        asyncio.run(tunnel_serve(config['host'], proxy_config.listeners(config, configured=True), config['ssh_port'], config['openvpn_port']))
     elif args.command == 'online':
         print(json.dumps(collect(), indent=2))
     else:

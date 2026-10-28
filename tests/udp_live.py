@@ -38,7 +38,7 @@ def start(name, config):
 with patch.object(manager, 'run', side_effect=run), patch.object(manager, 'start', side_effect=start):
     manager.initialize()
     config = manager.load()
-    config.update(endpoint=os.environ.get('UDP_TEST_ENDPOINT','localhost'), udp_obfs='test-obfs', checkuser=True)
+    config.update(endpoint=os.environ.get('UDP_TEST_ENDPOINT','localhost'), checkuser=True)
     manager.create_user('a', 1, secret='1')
     udp_runtime.configure(manager, config, 36712)
 
@@ -52,9 +52,9 @@ class UDP(socketserver.BaseRequestHandler):
     def handle(self):
         data, sock = self.request
         sock.sendto(data, self.client_address)
-tcp = socketserver.ThreadingTCPServer(('127.0.0.1', 19001), TCP)
+tcp = socketserver.ThreadingTCPServer(('127.0.0.1', 9001), TCP)
 tcp.daemon_threads = True
-udp = socketserver.ThreadingUDPServer(('127.0.0.1', 19002), UDP)
+udp = socketserver.ThreadingUDPServer(('127.0.0.1', 9002), UDP)
 for service in (tcp, udp):
     threading.Thread(target=service.serve_forever, daemon=True).start()
 server_log = open('/tmp/udp-server.log', 'w')
@@ -62,11 +62,11 @@ server = subprocess.Popen(['python3', '/usr/local/lib/vpnmanager/manager.py', 's
 client = None
 
 def connect(password):
-    data = {'server':'127.0.0.1:36712', 'server_name':config['endpoint'], 'protocol':'udp', 'up_mbps':10, 'down_mbps':10,
-            'auth_str':'a:' + password, 'obfs':'test-obfs', 'ca':'/etc/vpnmanager/udp-ca.crt',
+    data = {'server':'127.0.0.1:10000-50000', 'server_name':config['endpoint'], 'protocol':'udp', 'up_mbps':10, 'down_mbps':10,
+            'auth_str':'a:' + password, 'obfs':'svpn', 'ca':'/etc/vpnmanager/udp-ca.crt',
             'quit_on_disconnect':True, 'retry':0, 'handshake_timeout':3, 'idle_timeout':4,
-            'relay_tcp':{'listen':'127.0.0.1:19000','remote':'127.0.0.1:19001'},
-            'relay_udp':{'listen':'127.0.0.1:19003','remote':'127.0.0.1:19002'}}
+            'relay_tcp':{'listen':'127.0.0.1:9000','remote':'127.0.0.1:9001'},
+            'relay_udp':{'listen':'127.0.0.1:9003','remote':'127.0.0.1:9002'}}
     manager.write('/tmp/udp-client.json', json.dumps(data))
     output = open('/tmp/udp-client.log', 'w')
     process = subprocess.Popen([str(udp_runtime.BINARY), '--no-check', '--log-level', 'info', 'client', '-c', '/tmp/udp-client.json'],stdout=output,stderr=subprocess.STDOUT)
@@ -75,6 +75,8 @@ def connect(password):
 
 try:
     time.sleep(.5)
+    # Loopback test traffic traverses OUTPUT instead of the external PREROUTING hook.
+    subprocess.run(['iptables','-t','nat','-A','OUTPUT','-p','udp','-d','127.0.0.1','-j','VPNMANAGER_UDP'],check=True)
     client = connect('1')
     for _ in range(60):
         time.sleep(.1)
@@ -82,12 +84,12 @@ try:
             break
         if client.poll() is not None: raise AssertionError('UDP client exited early')
     else: raise AssertionError('UDP authenticated session not counted')
-    with socket.create_connection(('127.0.0.1', 19000), timeout=5) as connection:
+    with socket.create_connection(('127.0.0.1', 9000), timeout=5) as connection:
         connection.sendall(b'shared-account-tcp-over-quic')
         assert connection.recv(4096) == b'shared-account-tcp-over-quic'
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as connection:
         connection.settimeout(5)
-        connection.sendto(b'native-udp-relay', ('127.0.0.1',19003))
+        connection.sendto(b'native-udp-relay', ('127.0.0.1',9003))
         assert connection.recv(4096) == b'native-udp-relay'
     assert online.collect()['total'] == 1
     api=online.ThreadingHTTPServer(('127.0.0.1',0),online.Handler)
@@ -132,6 +134,7 @@ except BaseException:
     print(Path('/tmp/udp-client.log').read_text() if Path('/tmp/udp-client.log').exists() else '')
     raise
 finally:
+    subprocess.run(['iptables','-t','nat','-D','OUTPUT','-p','udp','-d','127.0.0.1','-j','VPNMANAGER_UDP'],check=False)
     for process in (client, server):
         if process and process.poll() is None:
             process.terminate()
