@@ -24,7 +24,7 @@ sudo menu
 - Online/CheckUser APIs, speed test and optional x-ui installation.
 
 **Made with Codex Ai by sansoe❤️**
-Credit
+**Credit**
 - @kiritosshxd
 - @rust-ssh-manager
 - @ssh-plus-manager
