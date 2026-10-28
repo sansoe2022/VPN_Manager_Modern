@@ -17,6 +17,7 @@ import accounts
 import backup_crypto
 import downloads
 import proxy_config
+import progress
 
 ROOTS = {'config': Path('/etc/vpnmanager'), 'openvpn': Path('/etc/openvpn/server'),
          'source': Path('/usr/local/lib/vpnmanager'), 'units': Path('/etc/systemd/system'),
@@ -139,6 +140,7 @@ def validate_members(archive):
     return members
 
 
+@progress.operation('Validating and applying backup')
 def restore(m, filename, activate=True, endpoint=None):
     try:
         source = tarfile.open(filename, 'r:gz')
@@ -202,8 +204,9 @@ def restore(m, filename, activate=True, endpoint=None):
             target = ROOTS[parts[0]].joinpath(*parts[1:])
             if any(parent.is_symlink() for parent in (target, *target.parents)):
                 raise ValueError('A restore destination is a symbolic link.')
-        before = create(m)
-        print('Before-restore backup: ' + str(before))
+        with progress.stage('Saving current state before restore'):
+            before = create(m)
+        print('Before-restore backup: ' + str(before), flush=True)
         # Stop only manager-owned services before replacing managed binaries/databases.
         if activate:
             owned = {m.SERVICES[name] for name in m.load()['enabled'] if name in m.SERVICES}
@@ -212,6 +215,7 @@ def restore(m, filename, activate=True, endpoint=None):
                 owned.add('vpnmanager-sshd')
             for unit in owned:
                 subprocess.run(['systemctl', 'stop', unit], capture_output=True, text=True)
+        print(f'Restoring {len(manifest["accounts"])} account(s)...', flush=True)
         for user in manifest['accounts']:
             name = user['name']
             if name not in current:
@@ -219,6 +223,7 @@ def restore(m, filename, activate=True, endpoint=None):
             m.run('chpasswd', '-e', input=name + ':' + user['hash'] + '\n')
             m.run('chage', '-E', str(user['expiry'] or '-1'), name)
             accounts.update(name, **user['metadata'])
+        print('Restoring script, keys and service files...', flush=True)
         for item in members:
             if not item.isfile() or item.name == 'manifest.json':
                 continue
@@ -235,6 +240,8 @@ def restore(m, filename, activate=True, endpoint=None):
         if endpoint:
             config = m.load()
             config['endpoint'] = m.endpoint(endpoint)
+            if config.get('udp_port'):
+                config['udp_server_name'] = config['endpoint']
             m.save(config)
     if activate:
         rebuild(m, manifest)
@@ -296,7 +303,8 @@ def restore_source(m, source, password=None, activate=True, endpoint=None):
     with tempfile.TemporaryDirectory(prefix='vpnmanager-restore-') as directory:
         root = Path(directory)
         remote = source.startswith(('https://', 'http://'))
-        path = downloads.fetch(source, root / 'download', LIMIT) if remote else Path(source)
+        with progress.stage('Downloading backup' if remote else 'Opening local backup'):
+            path = downloads.fetch(source, root / 'download', LIMIT, progress=progress.transfer) if remote else Path(source)
         with path.open('rb') as file:
             encrypted = file.read(len(backup_crypto.MAGIC)) == backup_crypto.MAGIC
         if remote and not encrypted:
@@ -305,5 +313,6 @@ def restore_source(m, source, password=None, activate=True, endpoint=None):
             if password is None:
                 import getpass
                 password = getpass.getpass('Backup password: ')
-            path = backup_crypto.decrypt(path, root / 'archive.tar.gz', password)
+            with progress.stage('Verifying backup password and decrypting'):
+                path = backup_crypto.decrypt(path, root / 'archive.tar.gz', password)
         restore(m, path, activate=activate, endpoint=endpoint)

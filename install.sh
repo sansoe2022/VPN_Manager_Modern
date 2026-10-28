@@ -28,18 +28,25 @@ if [[ ${1:-} == --restore-url ]]; then
 elif [[ ${1:-} == --fresh ]]; then
   shift
 elif [[ ! -f /etc/vpnmanager/config.json ]] && { : </dev/tty; } 2>/dev/null; then
-  printf '\nVPN Manager Modern\n1) Fresh installation\n2) Restore from encrypted backup URL\nSelect [1]: ' >/dev/tty
-  read -r install_mode </dev/tty
-  case ${install_mode:-1} in
-    1) ;;
-    2) printf 'Backup URL: ' >/dev/tty; read -r restore_url </dev/tty
-       [[ -n "$restore_url" ]] || { echo 'A backup URL is required.' >&2; exit 1; } ;;
-    *) echo 'Choose 1 or 2.' >&2; exit 1 ;;
-  esac
+  while true; do
+    printf '\nVPN Manager Modern\n1) Fresh installation\n2) Restore from encrypted backup URL\nSelect [1]: ' >/dev/tty
+    IFS= read -r install_mode </dev/tty || { echo 'Installer input closed.' >&2; exit 1; }
+    install_mode=${install_mode//[[:space:]]/}
+    case ${install_mode:-1} in
+      1|01) echo 'Fresh installation selected. Installing packages...' >/dev/tty; break ;;
+      2|02) printf 'Backup URL: ' >/dev/tty; IFS= read -r restore_url </dev/tty
+         restore_url=${restore_url//[[:space:]]/}
+         [[ -n "$restore_url" ]] || { echo 'A backup URL is required.' >&2; exit 1; }
+         echo 'Restore selected. Preparing required packages...' >/dev/tty; break ;;
+      *) echo 'Choose 1 or 2. Please try again.' >/dev/tty ;;
+    esac
+  done
 fi
+printf '[1/3] Installing required system packages...\n'
 apt-get -o Acquire::Retries=3 update
 apt-get -o Acquire::Retries=3 install -y --no-install-recommends python3 openssh-server openssl ca-certificates iproute2 procps squid stunnel4 openvpn easy-rsa iptables util-linux
 install -d -m 0755 /usr/local/lib/vpnmanager
+printf '[2/3] Installing manager source and launchers...\n'
 install -m 0644 "$src"/vpnmanager/*.py /usr/local/lib/vpnmanager/
 install -d -m 0755 /usr/local/lib/vpnmanager/assets
 install -m 0644 "$src/vpnmanager/assets/openvpn-shared.zip" /usr/local/lib/vpnmanager/assets/
@@ -57,6 +64,7 @@ for alias in menu vpnmenu; do
   fi
   ln -sfn /usr/local/bin/vpnmanager "/usr/local/bin/$alias"
 done
+printf '[3/3] Initializing manager services...\n'
 vpnmanager initialize
 if [[ -n "$restore_url" ]]; then
   if { : </dev/tty; } 2>/dev/null; then
@@ -66,7 +74,8 @@ if [[ -n "$restore_url" ]]; then
   fi
 fi
 if [[ -z "$restore_url" ]]; then
-  for service in vpnmanager-tunnel vpnmanager-online vpnmanager-udp; do
+  vpnmanager refresh-udp
+  for service in vpnmanager-tunnel vpnmanager-online; do
     if systemctl is-active --quiet "$service"; then
       systemctl restart "$service"
     fi

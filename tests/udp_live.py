@@ -1,5 +1,6 @@
 """Real Hysteria v1 client/server, shared Unix credentials and unified online API."""
 import json
+import base64
 import os
 from pathlib import Path
 import shutil
@@ -9,6 +10,7 @@ import subprocess
 import sys
 import threading
 import time
+from urllib.request import Request, urlopen
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'vpnmanager'))
@@ -36,7 +38,7 @@ def start(name, config):
 with patch.object(manager, 'run', side_effect=run), patch.object(manager, 'start', side_effect=start):
     manager.initialize()
     config = manager.load()
-    config.update(endpoint='localhost', udp_obfs='test-obfs')
+    config.update(endpoint=os.environ.get('UDP_TEST_ENDPOINT','localhost'), udp_obfs='test-obfs', checkuser=True)
     manager.create_user('a', 1, secret='1')
     udp_runtime.configure(manager, config, 36712)
 
@@ -60,7 +62,7 @@ server = subprocess.Popen(['python3', '/usr/local/lib/vpnmanager/manager.py', 's
 client = None
 
 def connect(password):
-    data = {'server':'127.0.0.1:36712', 'server_name':'localhost', 'protocol':'udp', 'up_mbps':10, 'down_mbps':10,
+    data = {'server':'127.0.0.1:36712', 'server_name':config['endpoint'], 'protocol':'udp', 'up_mbps':10, 'down_mbps':10,
             'auth_str':'a:' + password, 'obfs':'test-obfs', 'ca':'/etc/vpnmanager/udp-ca.crt',
             'quit_on_disconnect':True, 'retry':0, 'handshake_timeout':3, 'idle_timeout':4,
             'relay_tcp':{'listen':'127.0.0.1:19000','remote':'127.0.0.1:19001'},
@@ -88,6 +90,16 @@ try:
         connection.sendto(b'native-udp-relay', ('127.0.0.1',19003))
         assert connection.recv(4096) == b'native-udp-relay'
     assert online.collect()['total'] == 1
+    api=online.ThreadingHTTPServer(('127.0.0.1',0),online.Handler)
+    api_thread=threading.Thread(target=api.serve_forever,daemon=True); api_thread.start()
+    try:
+        auth='Basic '+base64.b64encode(b'a:1').decode()
+        with urlopen(Request(f'http://127.0.0.1:{api.server_port}/checkuser',headers={'Authorization':auth})) as response:
+            result=json.load(response)
+        assert set(result)=={'username','connection_limit','expire_date'}
+        assert result['username']=='a' and result['connection_limit']==1
+        print('PASS real CheckUser API with Unix password authentication and only three requested fields',flush=True)
+    finally: api.shutdown(); api.server_close(); api_thread.join()
     print('PASS shared one-character user/password, verified TLS, real TCP/UDP relay and unified online count', flush=True)
     client.terminate(); client.wait(timeout=5)
     for _ in range(100):

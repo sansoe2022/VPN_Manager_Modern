@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import time
+import textwrap
 
 import accounts
 import extras
@@ -87,10 +88,16 @@ def connection_services(config, output):
 
 def table(left, right, color=False):
     def item(entry):
-        number, label = entry
+        number, label = entry[:2]
+        running = entry[2] if len(entry) > 2 else None
+        width = 14 if running is not None else 18
+        body = f'{label[:width]:<{width}}'
+        if running is not None:
+            state = f'{"ON" if running else "OFF":>3}'
+            body += ' ' + (f'\033[{32 if running else 31}m{state}\033[0m' if color else state)
         if color:
-            return f'\033[31m[\033[36m{number}\033[31m] \033[33m{label:<18}\033[0m'
-        return f'[{number}] {label:<18}'
+            return f'\033[31m[\033[36m{number}\033[31m] \033[33m{body}\033[0m'
+        return f'[{number}] {body}'
     lines = []
     for index in range(max(len(left), len(right))):
         first = item(left[index]) if index < len(left) else ' ' * 23
@@ -105,9 +112,67 @@ class Classic:
         self.color = sys.stdout.isatty() and 'NO_COLOR' not in os.environ
         self.removed = False
         self.last_cpu = None
+        self._active = {}
 
     def paint(self, text, code):
         return f'\033[{code}m{text}\033[0m' if self.color else text
+
+    def state(self, running):
+        return self.paint('ON' if running else 'OFF', '32' if running else '31')
+
+    def field(self, label, value):
+        prefix = f'{label:<11}: '
+        width = min(47, max(32, shutil.get_terminal_size((47, 24)).columns))
+        text = ''.join(char if char.isprintable() else f'\\x{ord(char):02x}' for char in str(value))
+        print(textwrap.fill(text, width=width, initial_indent=prefix,
+                            subsequent_indent=' ' * len(prefix), break_long_words=True,
+                            break_on_hyphens=False, replace_whitespace=False, drop_whitespace=False))
+
+    def api_url(self, config, path):
+        host = config.get('endpoint', '')
+        if not host:
+            return '(set server IP/domain first)'
+        if ':' in host:
+            host = '[' + host.strip('[]') + ']'
+        return f'http://{host}:{config["online_port"]}{path}'
+
+    def port_status(self, config, output):
+        actual = listening_ports(output)
+        result = {'tcp': [], 'udp': []}
+        names = [('openvpn', 'OpenVPN'), ('squid', 'Squid Proxy'), ('dropbear', 'Dropbear SSH'),
+                 ('sslh', 'SSLH'), ('xui', 'X-UI Panel'), ('online', 'Online API')]
+        for name, label in names:
+            number = config.get(name + '_port')
+            if number:
+                on = name in config['enabled'] and number in actual['tcp'] and self.active(self.m.SERVICES[name])
+                result['tcp'].append((label, number, on))
+        if config.get('ssh_bind') not in (None, '127.0.0.1', '::1'):
+            number = config['ssh_port']
+            result['tcp'].append(('OpenSSH', number, number in actual['tcp'] and self.active('vpnmanager-sshd')))
+        for entry in proxy_config.listeners(config, configured=True):
+            on = 'tunnel' in config['enabled'] and entry['port'] in actual['tcp'] and self.active(self.m.SERVICES['tunnel'])
+            result['tcp'].append((proxy_config.label(entry), entry['port'], on))
+        if config.get('tls_port'):
+            number = config['tls_port']
+            label = {'openvpn': 'OpenVPN SSL', 'ssh': 'SSH SSL', 'tunnel': 'WebSocket SSL'}.get(config.get('tls_backend'), 'SSL Tunnel')
+            on = 'tls' in config['enabled'] and number in actual['tcp'] and self.active(self.m.SERVICES['tls'])
+            result['tcp'].append((label, number, on))
+        number = config.get('udp_port', 36712)
+        on = 'udp' in config['enabled'] and number in actual['udp'] and self.active(self.m.SERVICES['udp'])
+        result['udp'].append(('Hysteria UDP', number, on))
+        return result
+
+    def links(self, config, output):
+        print(self.paint('API Links:', '36'))
+        running = ('online' in config['enabled'] and config['online_port'] in listening_ports(output)['tcp']
+                   and self.active(self.m.SERVICES['online']))
+        for label, path, on in [('Online', '/server/online', running),
+                                ('Online App', '/server/online_app', running),
+                                ('CheckUser', '/checkuser', running and config.get('checkuser', False))]:
+            print(f'  {label:<24}' + self.state(on))
+            if on:
+                # Keep each URL on its own logical line so terminal auto-wrap remains copyable.
+                print(self.api_url(config, path))
 
     def clear(self):
         if sys.stdout.isatty():
@@ -135,6 +200,7 @@ class Classic:
         return record, expired, date, fields[1].startswith(('!', '*'))
 
     def header(self, title='VPN Manager Modern | make with Ai by sansoe'):
+        self._active = {}
         self.clear()
         line = '=' * 47
         print(self.paint(line, '36'))
@@ -161,18 +227,23 @@ class Classic:
         except (OSError, ValueError, KeyError, subprocess.SubprocessError):
             print('System statistics are temporarily unavailable.')
         try:
-            ports = connection_services(self.m.load(), self.m.capture('ss', '-H', '-lntu'))
+            config = self.m.load()
+            output = self.m.capture('ss', '-H', '-lntu')
+            ports = self.port_status(config, output)
             for protocol in ('tcp', 'udp'):
                 print(self.paint(protocol.upper() + ' Ports:' + ('' if ports[protocol] else ' (none)'), '36'))
-                for label, number in ports[protocol]:
-                    print(self.paint(f'  {label}: {number}', '36'))
+                for label, number, running in ports[protocol]:
+                    print(f'  {label:<24}{number:>5} ' + self.state(running))
+            self.links(config, output)
         except (OSError, subprocess.SubprocessError):
             print('Listening ports: unavailable')
         print(self.paint(line, '36'))
 
     def active(self, unit):
-        return subprocess.run(['systemctl', 'is-active', '--quiet', unit],
+        if unit not in self._active:
+            self._active[unit] = subprocess.run(['systemctl', 'is-active', '--quiet', unit],
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+        return self._active[unit]
 
     def marked(self, entries):
         units = {'17': 'vpnmanager-limiter.timer', '18': 'vpnmanager-badvpn',
@@ -186,8 +257,9 @@ class Classic:
                 running = self.active(units[number])
                 if number == '20':
                     running = running and config.get('checkuser', False)
-                label += ' *' if running else ' o'
-            result.append((number, label))
+                result.append((number, label, running))
+            else:
+                result.append((number, label))
         return result
 
 
@@ -224,7 +296,11 @@ class Classic:
 
     def username(self):
         names = sorted(self.m.users())
-        print('Managed users: ' + (', '.join(names) or '(none)'))
+        print('Managed users:')
+        for name in names:
+            print('  ' + name)
+        if not names:
+            print('  (none)')
         username = input('Username: ').strip()
         self.m.managed(username)
         return username
@@ -266,24 +342,29 @@ class Classic:
     def report(self, one=None):
         data = self.m.collect()
         counts = collections.Counter(name for values in data['users'].values() for name in values)
-        print(f'{"USER":<20}{"PASSWORD":<24}{"ONLINE/LIMIT":<16}{"EXPIRY":<20}STATUS')
         for name in ([one] if one else sorted(self.m.users())):
             record, expired, expiry, locked = self.metadata(name)
             status = 'Expired' if expired else 'Locked' if locked else 'Active'
             connection = f'{counts[name]}/{record.get("limit", 1)}'
             secret = record.get('password', '(reset to display)')
-            print(f'{name:<20}{secret:<24}{connection:<16}{expiry:<20}{status}')
+            print(self.paint('-' * 47, '36'))
+            for label, value in [('User', name), ('Password', secret), ('Connections', connection), ('Expires', expiry), ('Status', status)]:
+                self.field(label, value)
 
     def monitor(self):
         data = self.m.collect()
         per_protocol = {protocol: collections.Counter(names) for protocol, names in data['users'].items()}
-        print(f'{"USER":<20}{"STATUS":<10}{"SSH":>5}{"DROP":>6}{"OVPN":>6}{"UDP":>5}{"TOTAL/LIMIT":>14}')
         records = accounts.load()
         for name in sorted(self.m.users()):
             values = [per_protocol.get(protocol, {}).get(name, 0) for protocol in ('ssh', 'dropbear', 'openvpn', 'udp')]
             total = sum(values)
             limit = records.get(name, {}).get('limit', 1)
-            print(f'{name:<20}{"Online" if total else "Offline":<10}{values[0]:>5}{values[1]:>6}{values[2]:>6}{values[3]:>5}{str(total) + "/" + str(limit):>14}')
+            print(self.paint('-' * 47, '36'))
+            self.field('User', name)
+            self.field('Connections', f'{total}/{limit}')
+            self.field('SSH / DROP', f'{values[0]} / {values[1]}')
+            self.field('OVPN / UDP', f'{values[2]} / {values[3]}')
+            print(f'{"Status":<11}: ' + self.state(bool(total)))
 
     def change_limit(self):
         name = self.username()
@@ -315,9 +396,10 @@ class Classic:
         self.m.save(config)
 
     def service(self, name):
+        self._active = {}
         config = self.m.load()
         active = name in config['enabled']
-        options = [('1', 'Install / configure', 'setup'), ('2', 'Disable service', 'stop'),
+        options = [('1', 'Install / configure', 'setup'), ('2', 'Turn service OFF', 'stop'),
                    ('3', 'Restart service', 'restart'), ('0', 'Back', None)]
         if name == 'openvpn':
             options[3:3] = [('4', 'Export client file / download link', 'export'),
@@ -325,11 +407,12 @@ class Classic:
                             ('6', 'Revoke all profile download links', 'revoke')]
         if name == 'online':
             options.insert(3, ('4', 'Change Online App limit', 'app-limit'))
-        title = name.upper() + (' [enabled]' if active else ' [disabled]')
+        state = self.state(active and self.active(self.m.SERVICES[name]))
+        title = name.upper() + ' [' + state + ']'
         if name == 'tunnel':
-            title = 'PROXY / WEBSOCKET' + (' [enabled]' if active else ' [disabled]')
+            title = 'PROXY / WEBSOCKET [' + state + ']'
             title += ''.join(f'\n{proxy_config.label(item)}: {item["port"]}' for item in proxy_config.listeners(config, configured=True))
-            title += '\nNew port: add listener. Existing port: edit listener.'
+            title += '\nNew port adds; same port edits a listener.'
             options.insert(3, ('4', 'Remove one proxy port', 'remove-listener'))
         action = self.m.choose(title, options)
         if action is None:
@@ -367,7 +450,7 @@ class Classic:
                        *(['--now'] if action == 'stop' else []), self.m.SERVICES[name])
             if action == 'stop':
                 if name == 'squid':
-                    print('[2/3] Saving disabled state...', flush=True)
+                    print('[2/3] Saving OFF state...', flush=True)
                 config['enabled'] = [item for item in config['enabled'] if item != name]
                 self.m.save(config)
             elif name == 'squid':
@@ -479,8 +562,14 @@ class Classic:
                    '7': lambda: self.service('sslh'), '8': self.xui, '9': self.udp}
         while True:
             self.header('CONNECTION MODE')
+            config = self.m.load()
+            units = {'1': 'vpnmanager-sshd', '2': self.m.SERVICES['squid'], '3': self.m.SERVICES['dropbear'],
+                     '4': self.m.SERVICES['openvpn'], '5': self.m.SERVICES['tunnel'], '6': self.m.SERVICES['tls'],
+                     '7': self.m.SERVICES['sslh'], '8': self.m.SERVICES['xui'], '9': self.m.SERVICES['udp']}
             for number, label in CONNECTIONS:
-                print(self.paint(f'[{number}] {label}', '33'))
+                key = choice(number)
+                suffix = ' ' + self.state(self.active(units[key])) if key in units else ''
+                print(self.paint(f'[{number}] {label:<25}', '33') + suffix)
             selected = choice(input('WHAT WOULD YOU LIKE TO DO? : '))
             # Return to the caller. Never exit the program or recursively run menu.
             if selected == '0':
@@ -569,7 +658,9 @@ class Classic:
             print('Save the file and password before the link expires. Restore needs both.')
         elif action == 'restore':
             filename = input('Backup file path or URL: ').strip()
-            default = self.m.detect_public_ip() or self.m.load().get('endpoint', '')
+            import progress
+            with progress.stage('Detecting current server IP'):
+                default = self.m.detect_public_ip() or self.m.load().get('endpoint', '')
             address = input(f'Public IP / DNS after restore [{default}]: ').strip() or default
             # The user selected restore; its authenticated backup is the requested action.
             restore_source(self.m, filename, endpoint=address)
@@ -596,9 +687,12 @@ class Classic:
 
     def auto(self):
         config = self.m.load()
-        print('Enabled on boot: ' + (', '.join(config['enabled']) or '(none)'))
-        action = self.m.choose('AUTO EXECUTION', [('1', 'Enable configured services on boot', 'enable'),
-            ('2', 'Disable configured services at boot', 'disable'), ('0', 'Back', None)])
+        print('Service startup:')
+        for name in config['enabled']:
+            result = subprocess.run(['systemctl', 'is-enabled', self.m.SERVICES[name]], capture_output=True, text=True)
+            print(f'  {name:<24}' + self.state(result.stdout.strip() in ('enabled', 'enabled-runtime')))
+        action = self.m.choose('AUTO EXECUTION', [('1', 'Turn service startup ON', 'enable'),
+            ('2', 'Turn service startup OFF', 'disable'), ('0', 'Back', None)])
         if action:
             for name in config['enabled']:
                 self.m.run('systemctl', action, self.m.SERVICES[name])
@@ -679,7 +773,7 @@ class Classic:
 
     def xui(self):
         import xui
-        action = self.m.choose('X-UI PANEL', [('1', 'Install requested x-ui version', 'install'),
+        action = self.m.choose('X-UI PANEL [' + self.state(self.active(self.m.SERVICES['xui'])) + ']', [('1', 'Install requested x-ui version', 'install'),
             ('2', 'Open x-ui management menu', 'menu'), ('0', 'Back', None)])
         if action == 'install':
             xui.install(self.m)
@@ -689,8 +783,9 @@ class Classic:
     def udp(self):
         import udp_runtime
         config = self.m.load()
-        action = self.m.choose('UDP / HYSTERIA 1', [('1', 'Install / configure', 'install'),
-            ('2', 'Disable UDP', 'disable'), ('3', 'Show client settings', 'client'), ('0', 'Back', None)])
+        state = self.state('udp' in config['enabled'] and self.active(self.m.SERVICES['udp']))
+        action = self.m.choose('UDP / HYSTERIA 1 [' + state + ']', [('1', 'Install / configure', 'install'),
+            ('2', 'Turn UDP OFF', 'disable'), ('3', 'Show client settings', 'client'), ('0', 'Back', None)])
         if action == 'install':
             if not config.get('endpoint'):
                 self.public_endpoint(config)
@@ -709,21 +804,33 @@ class Classic:
             print('CA certificate: /etc/vpnmanager/udp-ca.crt')
 
     def checkuser(self):
-        action = self.m.choose('CHECKUSER', [('1', 'Check a managed user locally', 'local'),
-            ('2', 'Enable authenticated CheckUser API', 'api'), ('3', 'Disable CheckUser API', 'disable'), ('0', 'Back', None)])
+        config = self.m.load()
+        running = config.get('checkuser', False) and self.active(self.m.SERVICES['online'])
+        action = self.m.choose('CHECKUSER [' + self.state(running) + ']', [('1', 'Check a managed user locally', 'local'),
+            ('2', 'Install / turn CheckUser API ON', 'api'), ('3', 'Turn CheckUser API OFF', 'disable'), ('0', 'Back', None)])
         if action == 'local':
-            self.report(self.username())
+            name = self.username()
+            record, _, expiry, _ = self.metadata(name)
+            self.field('User', name)
+            self.field('Conn limit', record.get('limit', 1))
+            self.field('Expires', expiry)
         elif action == 'disable':
             config = self.m.load()
             config['checkuser'] = False
             self.m.save(config)
-            print('CheckUser API disabled. Online count endpoints are unchanged.')
+            print('CheckUser API: ' + self.state(False))
         elif action == 'api':
             config = self.m.load()
+            if not config.get('endpoint'):
+                self.public_endpoint(config)
+            print('Installing / starting CheckUser API...', flush=True)
+            self.m.configure('online', config, config['online_port'])
             config['checkuser'] = True
             self.m.save(config)
-            self.service('online')
-            print('GET /checkuser uses HTTP Basic authentication with a managed account. Use HTTPS in front of it.')
+            print('CheckUser API: ' + self.state(True))
+            print(self.api_url(config, '/checkuser'))
+            print('HTTP Basic login: managed username/password.')
+            print('Response: username, connection_limit, expire_date.')
 
     def bot(self, role):
         from telegram_bot import configure

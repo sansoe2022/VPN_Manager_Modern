@@ -1,5 +1,6 @@
 """Count authenticated sessions, independent of client ISP or tunnel transport."""
 import csv
+import datetime as dt
 import base64
 import accounts
 import profile_links
@@ -190,12 +191,14 @@ class Handler(BaseHTTPRequestHandler):
             result = subprocess.run(['getent', 'shadow', username], capture_output=True, text=True, check=True)
             fields = result.stdout.split(':')
             record = accounts.load().get(username, {})
-            status = 'expired' if accounts.expired(record, fields) else 'locked' if fields[1].startswith(('!', '*')) else 'active'
-            data = collect()
-            count = sum(names.count(username) for names in data['users'].values())
-            body = json.dumps({'username': username, 'status': status, 'online': count,
-                               'limit': record.get('limit', 1), 'expires_at': record.get('expires_at'),
-                               'expiry_day': fields[7] or None}).encode()
+            if record.get('expires_at') is not None:
+                expiry = dt.datetime.fromtimestamp(record['expires_at']).strftime('%Y-%m-%d %H:%M')
+            elif fields[7]:
+                expiry = (dt.date(1970, 1, 1) + dt.timedelta(days=int(fields[7]))).isoformat()
+            else:
+                expiry = 'Never'
+            body = json.dumps({'username': username, 'connection_limit': record.get('limit', 1),
+                               'expire_date': expiry}).encode()
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.send_header('Content-Length', str(len(body)))

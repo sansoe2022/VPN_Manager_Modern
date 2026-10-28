@@ -37,7 +37,7 @@ def start(name,config):
     config['enabled']=sorted(set(config['enabled'])|{name}); manager.save(config)
 password='migration-test-password-only'
 paths=['/etc/openvpn/server/vpnmanager-server.key','/etc/vpnmanager/tls.key','/etc/vpnmanager/udp-server.key',
-       '/etc/vpnmanager/ssh_host_ed25519_key','/etc/dropbear/dropbear_rsa_host_key']
+       '/etc/vpnmanager/ssh_host_ed25519_key','/etc/dropbear/dropbear_rsa_host_key','/etc/vpnmanager/udp-ca.key']
 with patch.object(manager,'run',side_effect=run),patch.object(manager,'start',side_effect=start),patch.object(extras,'package'):
     manager.initialize()
     if mode=='export':
@@ -63,7 +63,8 @@ with patch.object(manager,'run',side_effect=run),patch.object(manager,'start',si
             names=bundle.getnames()
             for name in ('source/manager.py','source/bin/hysteria','xui-config/x-ui.db','units/vpnmanager-tunnel.service','config/sshd_config'):
                 assert name in names,name
-        expected={'keys':{name:hashlib.sha256(Path(name).read_bytes()).hexdigest() for name in paths},'enabled':config['enabled']}
+        expected={'keys':{name:hashlib.sha256(Path(name).read_bytes()).hexdigest() for name in paths},
+                  'udp_ca':hashlib.sha256(Path('/etc/vpnmanager/udp-ca.crt').read_bytes()).hexdigest(),'enabled':config['enabled']}
         Path('/transfer/expected.json').write_text(json.dumps(expected))
         backup_crypto.encrypt(archive,'/transfer/backup.vpnbak',password)
         print('PASS full source/config/key/account/optional-database backup and encryption',flush=True)
@@ -81,11 +82,14 @@ with patch.object(manager,'run',side_effect=run),patch.object(manager,'start',si
                 manager.main()
         finally: web.shutdown(); web.server_close(); thread.join()
         expected=json.loads(Path('/transfer/expected.json').read_text())
-        assert {name:hashlib.sha256(Path(name).read_bytes()).hexdigest() for name in paths}==expected['keys']
+        assert {name:hashlib.sha256(Path(name).read_bytes()).hexdigest() for name in expected['keys']}==expected['keys']
+        if 'udp_ca' in expected:
+            assert hashlib.sha256(Path('/etc/vpnmanager/udp-ca.crt').read_bytes()).hexdigest()==expected['udp_ca']
         assert accounts.verify_password('migrated','1')
         assert accounts.load()['migrated']['password']=='1' and accounts.load()['migrated']['limit']==3
         assert manager.load()['endpoint']=='127.0.0.2'
-        assert manager.load()['udp_server_name']=='localhost'
+        assert manager.load()['udp_server_name']=='127.0.0.2'
+        subprocess.run(['openssl','x509','-in','/etc/vpnmanager/udp-server.crt','-noout','-checkip','127.0.0.2'],check=True)
         assert set(manager.load()['enabled'])==set(expected['enabled'])
         assert manager.capture('getent','shadow','root')==root_before
         with sqlite3.connect('/etc/x-ui/x-ui.db') as db: assert db.execute('SELECT value FROM settings').fetchone()[0]=='restored'
@@ -95,5 +99,5 @@ with patch.object(manager,'run',side_effect=run),patch.object(manager,'start',si
     else: raise ValueError('Choose export or restore')
 if mode=='restore':
     subprocess.run(['python3','/src/tests/openvpn_live.py'],check=True)
-    subprocess.run(['python3','/src/tests/udp_live.py'],check=True)
+    subprocess.run(['python3','/src/tests/udp_live.py'],check=True,env={**os.environ,'UDP_TEST_ENDPOINT':'127.0.0.2'})
     print('PASS real restored SSH, OpenVPN/WebSocket/SSL and UDP client sessions',flush=True)

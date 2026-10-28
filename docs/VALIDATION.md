@@ -2,7 +2,7 @@
 
 Date: 2026-10-28. Architecture: amd64. Disposable distro containers.
 
-The original-numbered English menu is covered by 50 unit checks, including the
+The original-numbered English menu is covered by 57 unit checks, including the
 specific **10 → 00 → main menu**, **22 → More → 35 → main menu** paths. The removed
 standalone V2Ray installer remains removed. Main-page/More-page numbers and
 connection entries 01–07 are retained; 08/09 now expose requested x-ui/UDP setup.
@@ -88,3 +88,12 @@ verified with a small transfer through the execution environment's network path.
 That measurement does not describe the user's VPS bandwidth.
 The installer prompt check uses a real pseudo-terminal for fresh/URL-restore
 selection and verifies noninteractive restore argument forwarding on Ubuntu 20.
+
+
+Phone UI/API follow-up: regression checks verify 47-column menu alignment with ANSI
+ON/OFF colors, long user/password cards without truncation, live port/link status,
+and direct 20 → 02 activation without opening the Online submenu. Real HTTP tests
+check Basic authentication and the exact three-field CheckUser response. Installer
+PTY checks include raw CRLF, whitespace and invalid-input retries. UDP certificate
+checks cover new DNS/IP SANs, unchanged CA/private-key hashes and legacy two-file
+migration; restored UDP clients verify the chosen current IP using the retained CA.

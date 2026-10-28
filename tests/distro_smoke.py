@@ -37,6 +37,17 @@ def run(*args, **kwargs):
     return real_run(*args, **kwargs)
 
 
+def forwarded_port(number):
+    deadline = time.monotonic() + 5
+    while True:
+        try:
+            return socket.create_connection(('127.0.0.1', number), timeout=3)
+        except ConnectionRefusedError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(.05)
+
+
 with patch.object(manager, 'run', side_effect=run):
     shutil.copytree('/src/vpnmanager', '/usr/local/lib/vpnmanager', dirs_exist_ok=True)
     Path('/usr/local/bin/vpnmanager').write_text('#!/bin/sh\nexec python3 /usr/local/lib/vpnmanager/manager.py "$@"\n')
@@ -97,7 +108,7 @@ with patch.object(manager, 'run', side_effect=run):
         else:
             subprocess.run(['ps', '-eo', 'user,pid,comm,args'], check=True)
             raise AssertionError('Authenticated Dropbear session was not counted')
-        with socket.create_connection(('127.0.0.1', 23457), timeout=3) as forwarded:
+        with forwarded_port(23457) as forwarded:
             assert forwarded.recv(100).startswith(b'SSH-2.0-')
         # Squid parses and actually forwards CONNECT to an allowed local SSH port.
         config['squid_networks'] = ['127.0.0.1/32']

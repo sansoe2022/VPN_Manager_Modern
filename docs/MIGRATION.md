@@ -76,7 +76,8 @@ duplicate destinations and unmanaged account conflicts. A local before-restore
 snapshot is made before replacement. CPU architecture mismatches are rejected.
 User port conflicts, provider firewalls, DNS and missing VPS kernel facilities still
 need attention. Existing TLS certificates must match the domain used by clients.
-UDP keeps its saved SNI/CA identity when the public server IP changes.
+UDP updates its SNI and leaf certificate to the selected current IP/DNS while
+retaining its CA trust and saved private keys. Update the client SNI to that value.
 
 Legacy Modern format-1 local archives can still restore their contained accounts
 and configuration; they do not contain the newer full source/binary snapshot.
@@ -86,3 +87,8 @@ Menu 33 stops/removes the manager and its launchers, retaining users, private ke
 configuration and backups. Dedicated OpenVPN/torrent firewall rules remain available
 for review rather than flushing the host firewall. Remove only `VPNMANAGER_*` rules
 and `/etc/sysctl.d/90-vpnmanager.conf` if the related VPN is no longer needed.
+
+Restore shows elapsed progress while downloading, decrypting, taking the pre-restore
+snapshot, writing accounts/files and activating services. Full backups contain their
+saved script version; run the update command after restoring an older snapshot to
+apply newer UI/API fixes.

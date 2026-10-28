@@ -78,7 +78,9 @@ names are plain shell launchers; their complete readable implementation is in
 
 The terminal menu has the red title, system/RAM/CPU information, online/expired/total
 counts, colored separators and two columns, sized for a 47-column terminal.
-`*` marks a running optional service and `o` marks an inactive one.
+Services and API links show green `ON` or red `OFF`. Port states require both a
+live listener and its running manager service; TCP and UDP have separate lists.
+The main banner also shows Online, Online App and CheckUser URLs when active.
 **22** opens More; **35** returns to the first page; **00** exits the main menu.
 
 Connection mode (**10**) keeps the original order:
@@ -176,9 +178,11 @@ Online API (normally TCP 81):
 - `/server/online_app` → `{"onlines":"3","limite":"2500"}`
 - `/server/online` and `/online` → plain session count
 - `/health` → health response
-- `/checkuser` → enabled through **20**, HTTP Basic authentication with a managed
-  account, returning only that account's status/expiry/limit/count. Put HTTPS in front
-  of it before sending passwords over an untrusted network.
+- `/checkuser` → **20 → 02** directly starts the API worker and enables CheckUser,
+  without entering the Online menu. HTTP Basic login uses the managed username/password.
+  The JSON contains exactly `username`, `connection_limit`, and `expire_date`
+  (`YYYY-MM-DD`, trial `YYYY-MM-DD HH:MM`, or `Never`). No password/status/online data
+  is returned. Put HTTPS in front before sending credentials over an untrusted network.
 
 Counts include authenticated managed SSH, Dropbear and OpenVPN sessions, excluding
 administrators/listeners and stale OpenVPN status files. One person using two protocols
@@ -313,23 +317,21 @@ Its native binary comes from the pinned upstream release with a SHA-256 check;
 there is no install-key server/loader, second users database, Redis, or separate
 online web server. Create a user once in 01/02 (or a bot): SSH, OpenVPN and UDP
 use the same account. Hysteria v1 client auth is `username:password`; choose the
-configured UDP port (default 36712), obfuscation and saved SNI. Trust the server's
+configured UDP port (default 36712), obfuscation and current IP/DNS as SNI. Trust the server's
 `/etc/vpnmanager/udp-ca.crt` or install a certificate valid for your domain.
 
 The supervised daemon records successful authenticated QUIC connections and
 removes them on the server's disconnect event. Abruptly closed clients can remain
 counted until the negotiated QUIC idle timeout (commonly 20 seconds, up to 60).
-Its total is merged into menu 04, the banner, CheckUser and `/server/online[_app]`.
+Its total is merged into menu 04, the banner and `/server/online[_app]`.
 Old `/udpserver/online[_app]` paths alias that same aggregate on the same web port.
 Passwords, locks, deletions and expiry use the shared Unix account data. With menu
 17 enabled, UDP admissions and combined limits use the same per-account limit.
 Hysteria v1 lacks a per-client disconnect control API: revoking an active UDP
 session restarts the UDP daemon, so other valid UDP clients may briefly reconnect.
 
-**10 → 08** installs x-ui using the requested Ubuntu mapping: the sansoe2022 fork
-on 20 and alireza0 on 24+. Ubuntu 22/Debian have no requested x-ui mapping and this
-optional installer reports that explicitly; all other manager features remain
-available. Installer source is pinned/checksummed; upstream release downloads keep
+**10 → 08** auto-detects the OS: sansoe2022/x-ui on Ubuntu 20/22 and Debian;
+alireza0/x-ui on Ubuntu 24+. The selected repository is printed before installation. Installer source is pinned/checksummed; upstream release downloads keep
 TLS certificate verification enabled. x-ui retains its own panel/inbound settings,
 and its installation/database are included in full backups. The old separate
 V2Ray menu installer has not been reintroduced.
@@ -337,3 +339,21 @@ V2Ray menu installer has not been reintroduced.
 Menu **11** uses a single-connection HTTPS bandwidth test (roughly 33 MB), showing
 HTTPS latency plus download/upload Mbps. If the primary server is unavailable,
 it attempts an OVH download-only fallback and labels upload as unavailable.
+
+## Phone layout, installer input and restore progress
+
+User report/monitor entries are aligned cards that fit the 47-column menu rather
+than a wide table. Long passwords wrap without truncation. Menu columns reserve
+space for colored ON/OFF flags, keeping their visible alignment.
+
+Fresh-install input accepts CRLF, surrounding whitespace and 01/02. Invalid input
+repeats the choice; valid choices immediately print the next package/install stage.
+Restore shows source/download progress, byte percentages when available, password
+verification/decryption, archive application, a safety-snapshot stage and service
+activation. Long stages emit elapsed-time heartbeats rather than appearing idle.
+
+UDP restore sets `udp_server_name` to the current IP/domain chosen at restore.
+A matching server leaf certificate is issued using the saved CA and existing private
+keys. Legacy two-file self-signed UDP setups are migrated without changing their
+trusted CA certificate or server key. Updates also refresh an already-restored UDP
+setup automatically; clients should use the current SNI shown in 10 → 09 → 03.

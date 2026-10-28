@@ -14,16 +14,18 @@ SOURCES = {
 
 def source(release):
     version = int(release.get('VERSION_ID', '0').strip('"').split('.')[0])
-    if release.get('ID', '').strip('"') == 'ubuntu' and version == 20:
+    system = release.get('ID', '').strip('"')
+    if (system == 'ubuntu' and version in (20, 22)) or system == 'debian':
         return SOURCES['ubuntu20']
-    if release.get('ID', '').strip('"') == 'ubuntu' and version >= 24:
+    if system == 'ubuntu' and version >= 24:
         return SOURCES['ubuntu24']
-    raise ValueError('The requested x-ui installer mapping supports Ubuntu 20 or Ubuntu 24+. Other manager services remain available.')
+    raise ValueError('x-ui installation supports Ubuntu 20/22/24+ and Debian.')
 
 
 def install(m):
     release = dict(row.split('=', 1) for row in Path('/etc/os-release').read_text().splitlines() if '=' in row)
     url, checksum = source(release)
+    print('Auto-selected installer: ' + ('sansoe2022/x-ui' if 'sansoe2022/' in url else 'alireza0/x-ui'), flush=True)
     print('Downloading the requested x-ui installer...', flush=True)
     with tempfile.TemporaryDirectory(prefix='vpnmanager-xui-') as directory:
         script = downloads.fetch(url, Path(directory) / 'install.sh', 2 * 1024 * 1024, checksum)

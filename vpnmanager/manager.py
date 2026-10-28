@@ -734,7 +734,7 @@ def menu():
 def main():
     os.environ['LC_ALL'] = 'C.UTF-8'
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', nargs='?', default='menu', choices=['menu', 'initialize', 'online', 'diagnostics', 'expire', 'serve-online', 'serve-tunnel', 'serve-udp', 'restore', 'rebuild', 'enforce-limits', 'serve-bot', 'feature'])
+    parser.add_argument('command', nargs='?', default='menu', choices=['menu', 'initialize', 'online', 'diagnostics', 'expire', 'serve-online', 'serve-tunnel', 'serve-udp', 'refresh-udp', 'restore', 'rebuild', 'enforce-limits', 'serve-bot', 'feature'])
     parser.add_argument('name', nargs='?', help='Feature name or bot role')
     parser.add_argument('--password-file', help='Root-private file containing the backup password')
     parser.add_argument('--endpoint', help='Public IP/domain to use after restore')
@@ -745,12 +745,25 @@ def main():
         menu()
     elif args.command == 'serve-udp':
         sys.exit(udp_runtime.serve(sys.modules[__name__]))
+    elif args.command == 'refresh-udp':
+        if config.get('udp_port') and config.get('endpoint'):
+            if 'udp' in config['enabled']:
+                udp_runtime.configure(sys.modules[__name__], config, config['udp_port'])
+            else:
+                config['udp_server_name'] = config['endpoint']
+                save(config)
     elif args.command == 'restore':
         import private_backup
         if not args.name:
             raise ValueError('Provide a backup file path or encrypted backup URL.')
+        print('Starting backup restore...', flush=True)
         secret = Path(args.password_file).read_text().rstrip('\r\n') if args.password_file else None
-        address = args.endpoint or detect_public_ip()
+        if args.endpoint:
+            address = args.endpoint
+        else:
+            import progress
+            with progress.stage('Detecting current server IP'):
+                address = detect_public_ip()
         if sys.stdin.isatty():
             address = input(f'Public IP / DNS after restore [{address or config.get("endpoint", "")}]: ').strip() or address or config.get('endpoint')
         private_backup.restore_source(sys.modules[__name__], args.name, password=secret, endpoint=address)

@@ -89,14 +89,16 @@ class AccountsAndInstallers(unittest.TestCase):
         ui=classic.Classic(core)
         with patch.object(ui,'metadata',side_effect=[({'password':'1'},False,'2030-01-01',False),({},False,'2030-01-01',False)]), contextlib.redirect_stdout(io.StringIO()) as output:
             ui.report()
-        self.assertIn('PASSWORD',output.getvalue())
+        self.assertIn('Password',output.getvalue())
         self.assertIn('(reset to display)',output.getvalue())
-        self.assertIn('a                   1',output.getvalue())
+        self.assertIn('User       : a',output.getvalue())
+        self.assertIn('Password   : 1',output.getvalue())
 
     def test_requested_xui_os_mapping(self):
         self.assertIn('sansoe2022', xui.source({'ID':'ubuntu','VERSION_ID':'20.04'})[0])
         self.assertIn('alireza0', xui.source({'ID':'ubuntu','VERSION_ID':'24.04'})[0])
-        with self.assertRaises(ValueError): xui.source({'ID':'ubuntu','VERSION_ID':'22.04'})
+        self.assertIn('sansoe2022',xui.source({'ID':'ubuntu','VERSION_ID':'22.04'})[0])
+        self.assertIn('sansoe2022',xui.source({'ID':'debian','VERSION_ID':'13'})[0])
 
     def test_udp_uses_existing_hash_and_expiry_instead_of_a_second_database(self):
         core=SimpleNamespace(managed=Mock(),capture=Mock(return_value='a:$hash:::::::'))
