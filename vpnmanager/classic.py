@@ -800,13 +800,19 @@ class Classic:
         config = self.m.load()
         state = self.state('udp' in config['enabled'] and self.active(self.m.SERVICES['udp']))
         action = self.m.choose('UDP / HYSTERIA 1 [' + state + ']', [('1', 'Install / configure', 'install'),
-            ('2', 'Turn UDP OFF', 'disable'), ('3', 'Show client settings', 'client'), ('0', 'Back', None)])
+            ('2', 'Turn UDP OFF', 'disable'), ('3', 'Show client settings', 'client'), ('4', 'Change idle disconnect timeout', 'timeout'), ('0', 'Back', None)])
         if action == 'install':
             if not config.get('endpoint'):
                 self.public_endpoint(config)
             number = self.m.port(input(f'UDP port [{config.get("udp_port", 36712)}]: ') or config.get('udp_port', 36712))
             config['udp_obfs'] = input(f'Obfuscation [{config.get("udp_obfs") or "svpn"}]: ') or config.get('udp_obfs') or 'svpn'
+            current = config.get('udp_idle_timeout', udp_runtime.DEFAULT_IDLE_TIMEOUT)
+            config['udp_idle_timeout'] = udp_runtime.idle_timeout(input(f'Idle disconnect seconds (4-120) [{current}]: ').strip() or current)
             udp_runtime.configure(self.m, config, number)
+        elif action == 'timeout':
+            current = config.get('udp_idle_timeout', udp_runtime.DEFAULT_IDLE_TIMEOUT)
+            value = input(f'Idle disconnect seconds (4-120) [{current}]: ').strip() or current
+            udp_runtime.set_idle_timeout(self.m, config, value)
         elif action == 'disable':
             self.m.run('systemctl', 'disable', '--now', self.m.SERVICES['udp'])
             config['enabled'] = [item for item in config['enabled'] if item != 'udp']
@@ -817,7 +823,7 @@ class Classic:
             print('Obfuscation: ' + (config.get('udp_obfs') or 'svpn'))
             print('Port hopping: ' + config.get('udp_port_range', '10000-65000'))
             print('SVPN auth_str / [user] must contain username:password, not username alone.')
-            print('Core: ' + config.get('udp_core_version', 'legacy') + '; idle disconnect: ' + str(config.get('udp_idle_timeout', 15)) + 's')
+            print('Core: ' + config.get('udp_core_version', 'legacy') + '; idle disconnect: ' + str(config.get('udp_idle_timeout', udp_runtime.DEFAULT_IDLE_TIMEOUT)) + 's')
             print('SNI: ' + config.get('udp_server_name', config.get('endpoint', '')))
             print('CA certificate: /etc/vpnmanager/udp-ca.crt')
         return action

@@ -44,6 +44,7 @@ with patch.object(manager, 'run', side_effect=run), patch.object(manager, 'start
     manager.create_user('a', 1, secret='1')
     manager.create_user('b', 1, secret='1')
     udp_runtime.configure(manager, config, 36712)
+    assert json.loads(udp_runtime.CONFIG.read_text())['idle_timeout']==config['udp_idle_timeout']==10
 
 class TCP(socketserver.BaseRequestHandler):
     def handle(self):
@@ -140,7 +141,7 @@ try:
     with admission.ledger() as rows:
         assert not any(key.startswith('udp:') and row['user']=='a' for key,row in rows.items())
         assert any(key.startswith('udp:') and row['user']=='b' for key,row in rows.items())
-    time.sleep(4)  # A normal 20s-idle client remains live past the server's 15s idle bound.
+    time.sleep(4)  # A normal 20s-idle client remains live past the manager's 10s idle bound.
     assert udp_runtime.sessions()==['b'] and client_b.poll() is None
     closed=time.monotonic()
     client_b.kill(); client_b.wait(timeout=5)
@@ -148,7 +149,7 @@ try:
         time.sleep(.1)
         if not udp_runtime.sessions(): break
     assert not udp_runtime.sessions(), 'Disconnected UDP session remains online'
-    assert time.monotonic()-closed < 20, 'Server did not enforce its negotiated idle bound'
+    assert time.monotonic()-closed < 15, 'Server did not enforce its negotiated idle bound'
     with admission.ledger() as rows:
         assert not any(key.startswith('udp:') and row['user']=='a' for key,row in rows.items()), 'UDP admission slot remains occupied after disconnect'
     print('PASS actual source-port migration, 1/1 to 0/1 cleanup and shared limiter slot release',flush=True)

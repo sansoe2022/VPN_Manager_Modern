@@ -22,6 +22,7 @@ import downloads
 BINARY = Path('/usr/local/lib/vpnmanager/bin/hysteria')
 CONFIG = Path('/etc/vpnmanager/udp.json')
 STATE = Path('/run/vpnmanager/udp-sessions.json')
+DEFAULT_IDLE_TIMEOUT = 10
 CORE_VERSION = 'v1.3.5-modern.1'
 CORE_URL = 'https://raw.githubusercontent.com/sansoe2022/VPN_Manager_Modern/66c9dc51f97b00e8d7aa8d3283adeef0b6a6c9c1'
 HASHES = {'amd64': '7ee32d3babee7465e4afba766216abbd199cf33cf2356e95eaa3006379810d11',
@@ -120,6 +121,32 @@ def certificates(m, endpoint, directory=Path('/etc/vpnmanager')):
     return leaf, key
 
 
+def idle_timeout(value):
+    try:
+        number = int(value)
+    except (ValueError, TypeError):
+        raise ValueError('UDP idle timeout must be a whole number between 4 and 120 seconds.') from None
+    if isinstance(value, float) and value != number or not 4 <= number <= 120:
+        raise ValueError('UDP idle timeout must be a whole number between 4 and 120 seconds.')
+    return number
+
+
+def set_idle_timeout(m, config, value):
+    number = idle_timeout(value)
+    updated = {**config, 'udp_idle_timeout': number}
+    if 'udp' in config['enabled']:
+        print('Applying idle timeout; UDP clients will reconnect...', flush=True)
+        configure(m, updated, config['udp_port'])
+    else:
+        # Saving a preference must not turn a disabled service ON.
+        if CONFIG.exists():
+            data = json.loads(CONFIG.read_text())
+            data['idle_timeout'] = number
+            m.write(CONFIG, json.dumps(data, indent=2))
+        m.save(updated)
+    print(f'UDP idle disconnect timeout saved: {number}s.', flush=True)
+
+
 def configure(m, config, number):
     number = m.port(number)
     if 'udp' not in config['enabled'] or number != config.get('udp_port'):
@@ -135,9 +162,7 @@ def configure(m, config, number):
         downloads.fetch(f'{CORE_URL}/hysteria-linux-{arch}', candidate, 64 * 1024 * 1024, HASHES[arch])
         candidate.chmod(0o755)
         os.replace(candidate, BINARY)  # Preserve the running old inode until restart.
-    idle = int(config.get('udp_idle_timeout', 15))
-    if not 4 <= idle <= 120:
-        raise ValueError('UDP idle timeout must be between 4 and 120 seconds.')
+    idle = idle_timeout(config.get('udp_idle_timeout', DEFAULT_IDLE_TIMEOUT))
     endpoint = m.endpoint(config['endpoint'])
     cert, key = certificates(m, endpoint)
     data = {'listen': f'{config.get("host", "0.0.0.0")}:{number}', 'protocol': 'udp', 'idle_timeout': idle, 'cert': str(cert), 'key': str(key),

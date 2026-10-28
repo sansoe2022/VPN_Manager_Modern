@@ -12,7 +12,9 @@ which changes during UDP port hopping and leaves a Python admission slot behind.
 Accepted authentication also gets a disconnect callback if writing the server hello
 fails. No wire protocol, client authentication format or certificates are changed.
 
-Server `idle_timeout` is configurable (4–120 seconds; default 15). An app that does
+Server `idle_timeout` is configurable (4–120 seconds). The standalone core fallback
+is 15 seconds; the manager explicitly configures 10 seconds by default and retains
+existing saved values. Menu 10 → 09 → 04 changes the saved manager timeout. An app that does
 not send QUIC CLOSE on disconnect releases its slot when the server detects idle;
 active client keepalives retain the session. A timer never frees a healthy live
 connection merely because a wall-clock lease expired.

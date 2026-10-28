@@ -1,5 +1,6 @@
 import contextlib
 import hashlib
+import json
 import io
 from pathlib import Path
 import subprocess
@@ -43,6 +44,9 @@ class UDPIdentity(unittest.TestCase):
                             with self.assertRaisesRegex(ValueError,'Download failed'): udp_runtime.configure(core,config,36712)
                         else:
                             udp_runtime.configure(core,config,36712)
+                    if not fail:
+                        self.assertEqual(config['udp_idle_timeout'],10)
+                        self.assertEqual(json.loads((root/'udp.json').read_text())['idle_timeout'],10)
                     self.assertEqual(binary.read_bytes(),original if fail else replacement)
                     self.assertIsNone(child.poll())
                 finally:

@@ -146,7 +146,15 @@ covered. The UDP test uses the official unmodified v1.3.5 client against the pat
 server, hops source/destination ports at 8-second intervals and verifies two users
 behind the same IP. Abruptly killing one client releases only that account's online
 entry and limiter slot; the other stays connected. A normal 20-second-idle client
-stays live with keepalives past the server's 15-second bound, then its slot clears
+stays live with keepalives past the server's configured idle bound, then its slot clears
 automatically after abrupt termination. Shared limit, password change and expiry
 checks continue afterward. New static amd64/arm64 server assets have pinned hashes;
 ARM64 is cross-compiled rather than natively exercised.
+
+
+UDP timeout menu: 73 unit checks cover option 04 applying an active timeout,
+validation before side effects, disabled-service preference changes without
+activation, and a 10-second default written to both manager and core configuration.
+Native Ubuntu 20.04 and Debian 13 checks use the official v1.3.5 client against the
+unchanged pinned Modern core with the manager's 10-second timeout; keepalives,
+port-hopping cleanup and shared limiter slot release remain verified.

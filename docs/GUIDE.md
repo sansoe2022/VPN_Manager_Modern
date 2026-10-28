@@ -453,7 +453,25 @@ See [native patch and build instructions](../native/README.md).
 
 A client sending QUIC CLOSE releases its slot on that event. If an app/network
 vanishes without CLOSE, the negotiated idle timeout releases it automatically;
-the server default is 15 seconds. Live connections with client keepalives are not
+the manager default for new installations is 10 seconds. Live connections with client keepalives are not
 expired by a fixed lease. There is no need to toggle the limiter, change limits
 or reboot to recover a normal disconnected UDP slot. Menu 10 → 09 → 03 shows the
-installed core version and configured timeout.
+installed core version and configured timeout. Menu 10 → 09 → 04 changes it.
+
+
+## Change UDP idle disconnect timeout
+
+Use **10 → 09 → 04** (or option 04 in `udpmanager`). Enter an integer from 4 to
+120 seconds. New setups default to **10 seconds**; install/configure also prompts
+for this value. An existing saved value such as 15 survives updates until changed.
+With UDP ON, applying the value restarts UDP so connected clients reconnect.
+With UDP OFF, it saves both files and leaves the service OFF.
+
+The GitHub default is `DEFAULT_IDLE_TIMEOUT` in `vpnmanager/udp_runtime.py`;
+the menu is in `vpnmanager/classic.py`. Installed VPS sources are under
+`/usr/local/lib/vpnmanager/`. The persistent setting is `udp_idle_timeout` in
+`/etc/vpnmanager/config.json`, and the generated core setting is `idle_timeout`
+in `/etc/vpnmanager/udp.json`. The menu updates these automatically. To edit the
+persistent setting manually, save it and run `sudo vpnmanager refresh-udp` to apply
+it to an enabled service. Editing the generated file alone is overwritten by setup.
+No native core rebuild is needed: the manager passes the selected value explicitly.
