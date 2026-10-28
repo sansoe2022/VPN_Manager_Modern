@@ -221,13 +221,14 @@ def _serve(m):
                     now = time.monotonic()
                     for old in list(pending):
                         if pending[old][1] < now - 15:
+                            import admission
+                            admission.release('udp', old)
                             del pending[old]
                     if len(pending) >= 4096:
                         username = None
-                    if username and m.load().get('limiter_enabled'):
-                        total = sum(names.count(username) for names in m.collect()['users'].values())
-                        reserved = sum(value[0] == username for value in pending.values())
-                        if total + reserved >= accounts.load().get(username, {}).get('limit', 1):
+                    if username:
+                        import admission
+                        if not admission.reserve(m, username, 'udp', addr, os.getpid()):
                             username = None
                     if username:
                         pending[addr] = (username, now)
@@ -264,6 +265,8 @@ def _serve(m):
                         connected[addr] = pending.pop(addr)[0]
                         save()
                     elif message == 'Client disconnected':
+                        import admission
+                        admission.release('udp', addr)
                         connected.pop(addr, None)
                         pending.pop(addr, None)
                         save()

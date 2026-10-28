@@ -4,6 +4,7 @@ import contextlib
 import os
 import ssl
 import socket
+import shutil
 from pathlib import Path
 import struct
 import subprocess
@@ -89,6 +90,11 @@ async def adapter(reader, writer, mode):
 async def main():
     if os.geteuid() or not Path('/.dockerenv').exists():
         raise RuntimeError('Run inside a disposable root container with --cap-add NET_ADMIN.')
+    shutil.copytree('/src/vpnmanager', '/usr/local/lib/vpnmanager', dirs_exist_ok=True)
+    Path('/usr/local/lib/vpnmanager').chmod(0o755)
+    for source in Path('/usr/local/lib/vpnmanager').glob('*.py'):
+        source.chmod(0o644)
+    manager.write('/usr/local/bin/vpnmanager', '#!/bin/sh\nexec python3 /usr/local/lib/vpnmanager/manager.py "$@"\n', 0o755)
     Path('/dev/net').mkdir(exist_ok=True)
     if not Path('/dev/net/tun').exists():
         os.mknod('/dev/net/tun', 0o20600, os.makedev(10, 200))
@@ -115,6 +121,11 @@ async def main():
         manager.export_client(config, '/tmp/live.ovpn')
         manager.save(config)
     manager.write('/tmp/live-auth', 'vpnhandshake\n1\n')
+    gate = subprocess.Popen(['python3', '/usr/local/lib/vpnmanager/admission.py', 'serve'])
+    for _ in range(60):
+        if Path('/run/vpnmanager-admission/gate.sock').exists():
+            break
+        await asyncio.sleep(.1)
     server = subprocess.Popen(['openvpn', '--cd', '/etc/openvpn/server', '--config', 'vpnmanager.conf', '--log', '/tmp/live-server.log'])
     # First activation persists the listeners before start() marks tunnel enabled.
     config['enabled'].remove('tunnel')
@@ -196,7 +207,7 @@ async def main():
         raise
     finally:
         ssh_bridge.close()
-        for process in (ssh_client, tls, sshd, proxy, server):
+        for process in (ssh_client, tls, sshd, proxy, server, gate):
             if process is not None and process.poll() is None:
                 process.terminate()
                 process.wait(timeout=5)

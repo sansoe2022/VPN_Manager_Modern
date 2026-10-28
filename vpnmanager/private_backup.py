@@ -264,6 +264,7 @@ def rebuild(m, manifest=None):
         path = Path('/usr/local/bin') / alias
         path.unlink(missing_ok=True)
         path.symlink_to('/usr/local/bin/vpnmanager')
+    m.write('/usr/local/bin/udpmanager', '#!/usr/bin/env bash\nexec /usr/local/bin/vpnmanager udp-menu\n', 0o755)
     print('[2/4] Restoring configured protocol services...', flush=True)
     if (ROOTS['config'] / 'sshd_config').exists():
         m.configure_ssh(config, config['ssh_port'], config.get('ssh_bind', '127.0.0.1'))

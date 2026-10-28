@@ -99,13 +99,19 @@ class AccountState(unittest.TestCase):
         fields[7] = '1'
         self.assertTrue(accounts.expired({}, fields, 86400))
 
-    def test_combined_protocol_limits_disconnect_only_over_limit(self):
-        data = {'users': {'ssh': ['alice', 'bob'], 'dropbear': ['alice'], 'openvpn': ['alice']}}
-        with patch.object(manager, 'collect', return_value=data), \
-             patch.object(accounts, 'load', return_value={'alice': {'limit': 2}, 'bob': {'limit': 1}}), \
-             patch.object(manager, 'users', return_value=['alice', 'bob']), patch.object(manager, 'disconnect') as disconnect:
+    def test_combined_protocol_limits_remove_only_newest_excess_session(self):
+        gate = manager.admission
+        rows = {'ssh:11': {'user':'alice','created':1},
+                'openvpn:127.0.0.1:1234': {'user':'alice','created':2},
+                'dropbear:12': {'user':'alice','created':3}}
+        with patch.object(manager, 'load', return_value={'limiter_enabled':True}), \
+             patch.object(gate, 'observed', return_value={'ssh:11':'alice','dropbear:12':'alice','ssh:13':'bob'}), \
+             patch.object(gate, 'ledger', return_value=contextlib.nullcontext(rows)), patch.object(gate, 'prune'), \
+             patch.object(accounts, 'load', return_value={'alice': {'limit':2}, 'bob': {'limit':1}}), \
+             patch.object(gate.os, 'kill') as kill, patch.object(manager, 'disconnect') as disconnect:
             manager.enforce_limits()
-        disconnect.assert_called_once_with('alice')
+        kill.assert_called_once_with(12, gate.signal.SIGTERM)
+        disconnect.assert_not_called()
 
     def test_dropbear_pid_reuse_cannot_count_an_old_login(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(dropbear_state, 'PATH', Path(directory) / 'sessions.json'):

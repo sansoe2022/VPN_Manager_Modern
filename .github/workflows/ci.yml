@@ -24,6 +24,8 @@ jobs:
         run: |
           python3 tests/fetch_hysteria.py /tmp/hysteria-test
           docker run --rm --cap-add NET_ADMIN -v /tmp/hysteria-test:/tmp/hysteria-test:ro --entrypoint python3 vpnmanager-test tests/udp_live.py
+      - name: Reject excess shared SSH OpenVPN UDP connections before establishment
+        run: docker run --rm --cap-add NET_ADMIN -v /tmp/hysteria-test:/tmp/hysteria-test:ro --entrypoint python3 vpnmanager-test tests/limiter_live.py
       - name: Restore a full encrypted backup into another fresh container
         if: matrix.distro == 'ubuntu:20.04'
         run: |

@@ -29,7 +29,7 @@ For the restored original menu, additionally verify:
 
 - 10 → 00 returns to the first page; 22/35 switch pages; 00 exits from either main page.
 - Create a minute-based trial and check expiry/disconnection after the timer runs.
-- Enable 17, exceed a user's combined connection limit and check disconnection.
+- Set limit 1 in 06 and enable 17. Keep one SSH/OpenVPN/UDP connection active in turn; new connections through all three must be refused while the original remains connected. Disconnect it and confirm another protocol can take its slot. Check simultaneous login attempts and limiter OFF. Lower a mixed account's limit and confirm the newer excess session is removed.
 - Test banner display in your chosen SSH app, including HTML if that app supports it.
 - Test BadVPN UDP relay through an authenticated SSH client on your network.
 - Confirm swap changes affect only the manager's own file and survive a reboot.

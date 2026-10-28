@@ -114,7 +114,7 @@ The old standalone V2Ray installer remains removed. At the owner's request, **08
    to set the public endpoint and write a private client profile.
 6. **10 → 02:** configure Squid and the allowed public client IP/CIDR ranges.
 7. **01/02:** create regular/trial accounts; **06** sets limits, and **17** enables
-   the background limiter. **19** configures the online API.
+   the combined connection limiter. **19** configures the online API.
 
 Allow the selected TCP ports in the host and hosting provider firewalls. Services
 are enabled explicitly; the distribution Squid package can start its default
@@ -126,8 +126,13 @@ password SSH login. OpenVPN additionally requires `/dev/net/tun`.
 - **Accounts:** create/remove, minute-based trials, expiry renewal, passwords,
   online monitor/report, expired-account cleanup, and per-user simultaneous limits.
   PAM rejects expired accounts; the expiry timer also locks and disconnects expired
-  or locked sessions every minute. The optional limiter checks every 15 seconds and
-  disconnects an account exceeding its limit across SSH, Dropbear, OpenVPN and UDP.
+  or locked sessions every minute. Menu 17 enables atomic admission across OpenSSH, Dropbear, OpenVPN and UDP.
+  New OpenSSH connections are checked by a managed-account PAM account hook; OpenVPN
+  is checked by its client-connect hook before tunnel establishment; UDP is checked
+  during authentication. Dropbear disconnects an excess session immediately after
+  its native authentication event. Existing valid sessions stay connected when a
+  new connection is refused. A 15-second timer handles lowered limits by removing
+  newer excess connections instead of disconnecting every session for the user.
   Forwarding accounts have no interactive shell; use SSH forwarding/no-session mode.
 - **Banner/traffic/optimization:** text or HTML SSH/Dropbear banner and OpenVPN ECHO, network byte totals,
   package repair/cache cleanup, optional package upgrades and BBR when the host kernel supports it.
@@ -373,3 +378,31 @@ Updates and activated restores reapply a saved nonempty banner.
 action opens a clean page, including terminal scrollback. Status output and errors remain
 visible until Enter is pressed. `udpmanager` opens the integrated UDP menu, using the
 same accounts and services as **10 → 09**.
+
+
+## Combined connection limiter (06 / 17)
+
+Set each user's simultaneous connection limit in **06**, then select **17 → 01**
+to turn enforcement ON (**17 → 02** turns it OFF). The account's SSH, Dropbear,
+OpenVPN and UDP connections share one total. With limit 2, SSH 1 + OpenVPN 1 fills
+the account; an additional UDP connection is refused until a slot becomes free.
+WebSocket/TLS transport does not add another count to the underlying SSH/OpenVPN
+connection. X-ui's separate panel accounts are outside this Unix account limiter.
+
+A root-private file lock makes the capacity check and reservation atomic across
+protocols and concurrent login attempts. SSH reservations identify the privileged
+connection process, including OpenSSH's temporary PAM helper; process start IDs
+prevent PID reuse and exited/zombie processes release their slots. OpenVPN uses
+its native client-connect/disconnect hooks via a local root admission service,
+which validates the hook's ancestry against the root-owned OpenVPN server PID.
+Its existing PAM password/expiry checks remain in use. UDP shares the same ledger
+and releases slots when Hysteria reports disconnection. An abruptly closed UDP
+client can still occupy its slot until the negotiated QUIC idle timeout.
+
+Updates and restore rebuilds install the hooks automatically. The first migration
+of an already configured OpenVPN server to the hooks restarts that managed server;
+clients reconnect. Administrator SSH accounts outside the `vpnmanager` group skip
+the admission helper at the PAM stack, and managed-account hooks are removed on
+uninstall. Toggling the limiter does not restart SSH/UDP or an already migrated
+OpenVPN server. If a lowered limit requires ejecting an existing UDP session,
+Hysteria v1 requires a UDP daemon restart; other UDP clients briefly reconnect.

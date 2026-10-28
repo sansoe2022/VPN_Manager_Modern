@@ -28,6 +28,7 @@ import login_banner
 from urllib.request import urlopen
 from urllib.error import URLError
 
+import admission
 from online import collect, serve as online_serve
 from tunnel import serve_listeners as tunnel_serve
 
@@ -113,6 +114,7 @@ def initialize():
         save(dict(DEFAULTS))
     if not Path('/etc/vpnmanager/banner').exists():
         write('/etc/vpnmanager/banner', '', 0o644)
+    admission.install(sys.modules[__name__])
     service_unit('vpnmanager-online', '/usr/local/bin/vpnmanager serve-online')
     service_unit('vpnmanager-tunnel', '/usr/local/bin/vpnmanager serve-tunnel')
     service_unit('vpnmanager-tls', '/usr/bin/stunnel /etc/vpnmanager/stunnel.conf')
@@ -251,13 +253,7 @@ def expire_portable():
 
 
 def enforce_limits():
-    from collections import Counter
-    counts = Counter(name for names in collect()['users'].values() for name in names)
-    for username, record in accounts.load().items():
-        if username in users() and counts[username] > record.get('limit', 1):
-            disconnect(username)
-
-
+    admission.enforce(sys.modules[__name__])
 
 
 def port(value):
@@ -546,7 +542,7 @@ verify-client-cert none
 username-as-common-name
 duplicate-cn
 plugin {plugins[0]} vpnmanager
-push "redirect-gateway def1 bypass-dhcp"
+{admission.openvpn_options()}push "redirect-gateway def1 bypass-dhcp"
 push "dhcp-option DNS 1.1.1.1"
 push "dhcp-option DNS 9.9.9.9"
 {login_banner.openvpn_option(login_banner.BANNER.read_text() if login_banner.BANNER.exists() else "")}
@@ -736,7 +732,7 @@ def menu():
 def main():
     os.environ['LC_ALL'] = 'C.UTF-8'
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', nargs='?', default='menu', choices=['menu', 'udp-menu', 'initialize', 'online', 'diagnostics', 'expire', 'serve-online', 'serve-tunnel', 'serve-udp', 'refresh-udp', 'refresh-banner', 'restore', 'rebuild', 'enforce-limits', 'serve-bot', 'feature'])
+    parser.add_argument('command', nargs='?', default='menu', choices=['menu', 'udp-menu', 'initialize', 'online', 'diagnostics', 'expire', 'serve-online', 'serve-tunnel', 'serve-udp', 'refresh-udp', 'refresh-banner', 'refresh-limiter', 'admit-pam', 'serve-admission', 'restore', 'rebuild', 'enforce-limits', 'serve-bot', 'feature'])
     parser.add_argument('name', nargs='?', help='Feature name or bot role')
     parser.add_argument('--password-file', help='Root-private file containing the backup password')
     parser.add_argument('--endpoint', help='Public IP/domain to use after restore')
@@ -745,7 +741,13 @@ def main():
     if args.command in ('menu', 'udp-menu', 'feature'):
         clear_terminal()
     config = load()
-    if args.command == 'udp-menu':
+    if args.command == 'admit-pam':
+        sys.exit(0 if admission.pam(sys.modules[__name__]) else 1)
+    elif args.command == 'serve-admission':
+        admission.serve(sys.modules[__name__])
+    elif args.command == 'refresh-limiter':
+        admission.refresh(sys.modules[__name__])
+    elif args.command == 'udp-menu':
         from classic import Classic
         Classic(sys.modules[__name__]).udp_menu()
     elif args.command == 'menu':

@@ -82,14 +82,16 @@ def badvpn(m, config, number, binary=None):
 
 
 def limiter(m, enabled):
+    import admission
+    admission.refresh(m)
     m.write('/etc/systemd/system/vpnmanager-limiter.service', '''[Unit]
-Description=Enforce SSHPlus per-account session limits
+Description=Enforce VPN Manager combined account limits
 [Service]
 Type=oneshot
 ExecStart=/usr/local/bin/vpnmanager enforce-limits
 ''', 0o644)
     m.write('/etc/systemd/system/vpnmanager-limiter.timer', '''[Unit]
-Description=Check SSHPlus session limits every 15 seconds
+Description=Check combined SSH/OpenVPN/UDP limits every 15 seconds
 [Timer]
 OnBootSec=15s
 OnUnitActiveSec=15s
@@ -101,6 +103,8 @@ WantedBy=timers.target
     config = m.load()
     config['limiter_enabled'] = enabled
     m.save(config)
+    print('Limiter ' + ('ON' if enabled else 'OFF') + ': one combined limit for SSH, Dropbear, OpenVPN and UDP.')
+    print('New SSH/OpenVPN/UDP connections are rejected when the account is full.')
 
 
 def torrent(m, enabled):

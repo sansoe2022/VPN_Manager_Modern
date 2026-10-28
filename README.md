@@ -25,6 +25,7 @@ Existing Modern configurations/accounts are retained during updates.
 - **11:** HTTPS download/upload speed test, with download fallback.
 - **15 → 03:** encrypted full-backup download link; keep its password separately.
 - **15 → 02:** restore from file/URL and start restored services.
+- **06 / 17:** set an account limit, then turn the combined SSH/OpenVPN/UDP limiter ON; excess new connections are rejected.
 - **19 → 04:** shared Online App limit. UDP uses the same online API.
 - **20 → 02:** directly install/start CheckUser API (username, connection limit, expiry only).
 - **10 → 00:** main menu; **22/35:** More/back; **00:** exit.

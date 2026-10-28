@@ -7,6 +7,7 @@ import signal
 import subprocess
 import sys
 import dropbear_state
+import admission
 
 
 def serve(port):
@@ -37,11 +38,16 @@ def serve(port):
             auth = re.search(r"(?:Password|Pubkey) auth succeeded for '([a-z][a-z0-9_-]{0,30})'", line)
             if pid and auth:
                 try:
+                    import manager
+                    if not admission.reserve(manager, auth[1], 'dropbear', pid[1], int(pid[1])):
+                        os.kill(int(pid[1]), signal.SIGTERM)
+                        continue
                     data[pid[1]] = {'user': auth[1], 'start': dropbear_state.identity(int(pid[1]))}
                 except (OSError, ValueError):
                     continue
                 dropbear_state.save(data)
             elif pid and re.search(r'\b(?:Exit|Disconnect)', line):
+                admission.release('dropbear', pid[1])
                 data.pop(pid[1], None)
                 dropbear_state.save(data)
     finally:

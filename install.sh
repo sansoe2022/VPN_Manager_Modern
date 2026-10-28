@@ -82,6 +82,7 @@ if [[ -n "$restore_url" ]]; then
   fi
 fi
 if [[ -z "$restore_url" ]]; then
+  vpnmanager refresh-limiter
   vpnmanager refresh-udp
   vpnmanager refresh-banner
   for service in vpnmanager-tunnel vpnmanager-online; do

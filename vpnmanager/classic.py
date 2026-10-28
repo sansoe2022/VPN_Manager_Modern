@@ -710,7 +710,12 @@ class Classic:
     def uninstall(self):
         if input('Type REMOVE to uninstall the manager (accounts and backups stay): ') != 'REMOVE':
             return
-        units = list(self.m.SERVICES.values()) + ['vpnmanager-sshd', 'vpnmanager-expire.timer',
+        import admission
+        pam = Path('/etc/pam.d/sshd')
+        if pam.exists():
+            rows = [row for row in pam.read_text().splitlines() if row not in (admission.PAM_LINE, admission.PAM_SKIP, '# VPN Manager managed accounts only')]
+            self.m.write(pam, '\n'.join(rows) + '\n', 0o644)
+        units = list(self.m.SERVICES.values()) + ['vpnmanager-admission', 'vpnmanager-sshd', 'vpnmanager-expire.timer',
             'vpnmanager-limiter.timer', 'vpnmanager-bot-admin', 'vpnmanager-bot-trial', 'vpnmanager-bot-reseller']
         for unit in units:
             result = subprocess.run(['systemctl', 'disable', '--now', unit], capture_output=True, text=True)
@@ -742,7 +747,7 @@ class Classic:
             '9': self.report, '10': self.connections,
             '11': self.speedtest, '12': self.banner, '13': self.traffic, '14': self.optimize,
             '15': self.backup, '16': lambda: extras.swap(self.m, int(input('Swap size in GiB (0 to disable): '))),
-            '17': lambda: extras.limiter(self.m, input('Enable connection limiter? [y/N]: ').lower() == 'y'),
+            '17': self.limiter,
             '18': lambda: self.service('badvpn'), '19': lambda: self.service('online'),
             '20': self.checkuser, '21': lambda: self.m.diagnostics(self.m.load()),
             '23': self.hosts, '24': lambda: self.hosts(True), '25': self.reboot,
@@ -761,6 +766,12 @@ class Classic:
     def reboot(self):
         if input('Reboot this server now? Type REBOOT: ') == 'REBOOT':
             self.m.run('systemctl', 'reboot')
+
+    def limiter(self):
+        on = self.m.load().get('limiter_enabled', False)
+        action = self.m.choose('COMBINED CONNECTION LIMITER [' + self.state(on) + ']\nSSH + Dropbear + OpenVPN + UDP share each account limit.\nSet the account limit in menu 06.', [('1', 'Turn limiter ON', True), ('2', 'Turn limiter OFF', False), ('0', 'Back', None)])
+        if action is not None:
+            extras.limiter(self.m, action)
 
     def speedtest(self):
         import speed_test

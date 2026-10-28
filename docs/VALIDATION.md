@@ -111,3 +111,20 @@ packets do not traverse external PREROUTING; the production hook is PREROUTING.
 IPv4 hopping remains usable on kernels without IPv6 NAT. Systemd/package operations
 remain simulated as described above; public firewall and mobile app display need
 VPS/client acceptance.
+
+
+Combined admission has 64 unit checks, including simultaneous reservations,
+protocol sharing, idempotent claims, dead PID cleanup and targeted fallback.
+`tests/limiter_live.py` runs real OpenSSH PAM, OpenVPN 2.4/2.5/2.6+ and Hysteria
+clients: with limit 1 each protocol occupies the account in turn and additional
+SSH/OpenVPN/UDP clients are refused while the first survives. It verifies SSH's
+reservation matches the live privileged connection PID, a freed UDP slot can be
+reused by OpenVPN, a mixed limit 2, a lowered limit disconnecting only the newer
+OpenVPN session, and limiter OFF allowing additional SSH sessions. An unmanaged distribution administrator can still authenticate when the managed-account helper is deliberately made to fail. CI runs these checks
+on all six distribution images. No public VPS or mobile app was accessed.
+
+The Ubuntu 20.04 to Debian 13 full encrypted migration also passes with the admission
+hooks included. A compatibility run keeps the previous published manager worker
+(`48ebb7d`) on disk and uses the standalone admission helper; all shared limit and
+administrator bypass cases still pass. This avoids depending on newer CLI command
+names when an older full backup restores its manager source.
