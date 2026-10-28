@@ -7,7 +7,6 @@ A VPN manager with a readable English menu for SSH, OpenVPN and UDP services.
 ## Required
 
 - Ubuntu 20.04+ or Debian 12+, root access and systemd.
-- Internet access, open service ports and `/dev/net/tun` for OpenVPN.
 
 ## Install / Update
 
@@ -24,4 +23,8 @@ sudo menu
 - OpenVPN profile download links and encrypted full backup/restore.
 - Online/CheckUser APIs, speed test and optional x-ui installation.
 
-**Make with Ai by sansoe❤️**
+**Made with Codex Ai by sansoe❤️**
+Credit
+- @kiritosshxd
+- @rust-ssh-manager
+- @ssh-plus-manager
