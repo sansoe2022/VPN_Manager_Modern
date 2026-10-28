@@ -15,7 +15,7 @@ Commands:
 | `/create USER PASSWORD DAYS LIMIT` | Owner/reseller; enforces quota, creates an account |
 | `/trial` | Trial bot: one per Telegram user every 24 hours; validity set in menu |
 | `/remove USER` | Owner or owning reseller |
-| `/password USER PASSWORD` | Owner or owning reseller; minimum 10 characters |
+| `/password USER PASSWORD` | Owner or owning reseller; minimum 1 character |
 | `/renew USER DAYS` | Owner or owning reseller; renew from today and unlock |
 | `/limit USER LIMIT` | Owner or owning reseller; enable limiter in menu 17 |
 | `/lock USER`, `/unlock USER` | Owner or owning reseller; locking disconnects sessions |

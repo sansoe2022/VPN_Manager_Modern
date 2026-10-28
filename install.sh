@@ -22,6 +22,8 @@ apt-get -o Acquire::Retries=3 update
 apt-get -o Acquire::Retries=3 install -y --no-install-recommends python3 openssh-server openssl ca-certificates iproute2 procps squid stunnel4 openvpn easy-rsa iptables util-linux
 install -d -m 0755 /usr/local/lib/vpnmanager
 install -m 0644 "$src"/vpnmanager/*.py /usr/local/lib/vpnmanager/
+install -d -m 0755 /usr/local/lib/vpnmanager/assets
+install -m 0644 "$src/vpnmanager/assets/openvpn-shared.zip" /usr/local/lib/vpnmanager/assets/
 install -d -m 0755 /usr/local/lib/vpnmanager/Modulos
 install -m 0755 "$src"/Modulos/* /usr/local/lib/vpnmanager/Modulos/
 install -d -m 0700 /etc/vpnmanager /var/lib/vpnmanager /var/lib/vpnmanager/backups

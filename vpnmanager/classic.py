@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import time
+import textwrap
 
 import accounts
 import extras
@@ -34,6 +35,17 @@ CONNECTIONS = [('01', 'OPENSSH'), ('02', 'SQUID PROXY'), ('03', 'DROPBEAR'),
 
 def choice(value):
     return value.strip().lstrip('0') or '0'
+
+
+def listening_ports(output):
+    ports = {'tcp': set(), 'udp': set()}
+    for row in output.splitlines():
+        fields = row.split()
+        if len(fields) >= 5 and fields[0] in ports:
+            value = fields[4].rsplit(':', 1)[-1]
+            if value.isdigit():
+                ports[fields[0]].add(int(value))
+    return ports
 
 
 def table(left, right, color=False):
@@ -61,8 +73,14 @@ class Classic:
         return f'\033[{code}m{text}\033[0m' if self.color else text
 
     def clear(self):
-        if self.color:
-            print('\033[2J\033[H', end='')
+        if sys.stdout.isatty():
+            print('\033[2J\033[H', end='', flush=True)
+
+    def page(self, title):
+        self.clear()
+        print(self.paint('=' * 47, '36'))
+        print(self.paint(f'{title:^47}', '44;97'))
+        print(self.paint('=' * 47, '36'))
 
     def pause(self):
         input('\nPress Enter to return: ')
@@ -105,6 +123,13 @@ class Classic:
             print(f'{"Online: " + str(online):<16}{"Expired: " + str(expired):<16}Total: {len(names)}')
         except (OSError, ValueError, KeyError, subprocess.SubprocessError):
             print('System statistics are temporarily unavailable.')
+        try:
+            ports = listening_ports(self.m.capture('ss', '-H', '-lntu'))
+            for protocol in ('tcp', 'udp'):
+                values = ', '.join(map(str, sorted(ports[protocol]))) or '(none)'
+                print(self.paint(textwrap.fill(protocol.upper() + ' ports: ' + values, width=47, subsequent_indent='  '), '36'))
+        except (OSError, subprocess.SubprocessError):
+            print('Listening ports: unavailable')
         print(self.paint(line, '36'))
 
     def active(self, unit):
@@ -168,14 +193,16 @@ class Classic:
 
     def create(self, trial=False):
         name = input('Username: ').strip()
-        limit = int(input('Simultaneous connection limit [1]: ') or '1')
-        if not 1 <= limit <= 1000:
-            raise ValueError('Choose a connection limit from 1 to 1000.')
+        secret = input('Password (visible): ')
+        self.m.validate_password(secret)
         minutes = int(input('Trial validity in minutes [60]: ') or '60') if trial else None
         if trial and not 1 <= minutes <= 10080:
             raise ValueError('Trial validity must be 1-10080 minutes.')
         days = (minutes // 1440 + 2) if trial else int(input('Validity in days [30]: ') or '30')
-        self.m.create_user(name, days, limit=limit)
+        limit = int(input('Simultaneous connection limit [1]: ') or '1')
+        if not 1 <= limit <= 1000:
+            raise ValueError('Choose a connection limit from 1 to 1000.')
+        self.m.create_user(name, days, secret=secret, limit=limit)
         if trial:
             accounts.update(name, expires_at=int(time.time()) + minutes * 60, trial=True)
             print(f'Trial expires in {minutes} minutes. Active sessions will be disconnected by the expiry timer.')
@@ -248,9 +275,21 @@ class Classic:
         options = [('1', 'Install / configure', 'setup'), ('2', 'Disable service', 'stop'),
                    ('3', 'Restart service', 'restart'), ('0', 'Back', None)]
         if name == 'openvpn':
-            options.insert(3, ('4', 'Export client profile', 'export'))
+            options[3:3] = [('4', 'Export client file / download link', 'export'),
+                            ('5', 'Set public IP / domain', 'endpoint'),
+                            ('6', 'Revoke all profile download links', 'revoke')]
+        if name == 'online':
+            options.insert(3, ('4', 'Change Online App limit', 'app-limit'))
         action = self.m.choose(name.upper() + (' [enabled]' if active else ' [disabled]'), options)
         if action is None:
+            return
+        if action == 'app-limit':
+            limit = int(input(f'Online App limit [{config.get("online_app_limit", 2500)}]: ') or config.get('online_app_limit', 2500))
+            if not 1 <= limit <= 2147483647:
+                raise ValueError('Limit must be 1-2147483647.')
+            config['online_app_limit'] = limit
+            self.m.save(config)
+            print('Online App limit saved. The API uses it immediately.')
             return
         if action in ('stop', 'restart'):
             self.m.run('systemctl', 'disable' if action == 'stop' else 'restart',
@@ -259,14 +298,58 @@ class Classic:
                 config['enabled'] = [item for item in config['enabled'] if item != name]
                 self.m.save(config)
             return
+        if action == 'endpoint':
+            config['endpoint'] = self.m.endpoint(input('Public server IP / domain: ').strip())
+            self.m.save(config)
+            print('Endpoint saved. Export a new profile if the address changed.')
+            return
+        if action == 'revoke':
+            import profile_links
+            print(f'Revoked {profile_links.cleanup(force=True)} download link(s).')
+            return
         if action == 'export':
+            mode = self.m.choose('EXPORT OPENVPN CLIENT', [('1', 'Save client file', 'file'),
+                ('2', 'Create download link', 'link'), ('0', 'Back', None)])
+            if mode is None:
+                return
+            transport = self.m.choose('CLIENT CONNECTION', [('1', 'Direct OpenVPN TCP', 'direct'),
+                ('2', 'OpenVPN through HTTP proxy', 'proxy'), ('0', 'Back', None)])
+            if transport is None:
+                return
+            config['openvpn_client_transport'] = transport
             if not config['endpoint']:
-                config['endpoint'] = self.m.endpoint(input('Public server IP / domain: '))
+                config['endpoint'] = self.m.endpoint(input('Public server IP / domain: ').strip())
                 self.m.save(config)
-            self.m.export_client(config, input('Profile output [/root/client.ovpn]: ') or '/root/client.ovpn')
+            self.m.save(config)
+            server_file = Path('/etc/openvpn/server/vpnmanager.conf')
+            shared = config.get('openvpn_key_source', 'shared') == 'shared'
+            if not server_file.exists() or shared != ('tls-auth ' in server_file.read_text()):
+                self.m.configure('openvpn', config, config['openvpn_port'])
+            if mode == 'file':
+                self.m.export_client(config, input('Profile output [/root/client.ovpn]: ') or '/root/client.ovpn')
+            else:
+                import profile_links
+                minutes = int(input('Download link validity in minutes [60]: ') or '60')
+                if not 1 <= minutes <= 1440:
+                    raise ValueError('Choose 1-1440 minutes.')
+                # Validate the address before starting the existing web service.
+                profile_links.base_url(self.m, config)
+                self.m.configure('online', config, config['online_port'])
+                url, expires = profile_links.create(self.m, config, minutes)
+                print('Download link: ' + url)
+                print('Expires: ' + dt.datetime.fromtimestamp(expires).isoformat(sep=' ', timespec='seconds'))
+                print(f'Allow TCP {config["online_port"]} in host/provider firewalls for this link.')
+                print('Keep this link private. The profile contains a shared TLS authentication key, not the server private key.')
             return
         defaults = {'dropbear': 109, 'sslh': 443, 'badvpn': 7300}
         number = self.m.port(input(f'TCP port [{config.get(name + "_port", defaults.get(name))}]: ') or config.get(name + '_port', defaults.get(name)))
+        if name == 'tunnel':
+            selected = choice(input('Proxy backends: [1] SSH, [2] OpenVPN, [3] both [3]: ') or '3')
+            backends = {'1': ['ssh'], '2': ['openvpn'], '3': ['ssh', 'openvpn']}.get(selected)
+            if backends is None:
+                raise ValueError('Choose SSH, OpenVPN or both.')
+            self.m.configure_proxy(config, number, backends)
+            return
         if name == 'tls':
             backend = self.m.choose('TLS BACKEND', [('1', 'OpenSSH', 'ssh'), ('2', 'OpenVPN', 'openvpn'), ('3', 'HTTP / WebSocket', 'tunnel'), ('0', 'Back', None)])
             if backend is None:
@@ -465,7 +548,10 @@ class Classic:
             '33': self.uninstall, '34': lambda: self.bot('reseller')}
         if number not in actions:
             raise ValueError('Unknown menu feature.')
-        actions[number]()
+        if number != '10':
+            labels = dict((choice(key), label) for key, label in MAIN_LEFT + MAIN_RIGHT + MORE_LEFT + MORE_RIGHT)
+            self.page(labels[number])
+        return actions[number]()
 
     def reboot(self):
         if input('Reboot this server now? Type REBOOT: ') == 'REBOOT':

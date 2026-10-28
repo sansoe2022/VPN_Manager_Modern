@@ -1,5 +1,10 @@
 """Run as root inside a disposable distro container, never on a production host."""
 import getpass
+import hashlib
+import threading
+from urllib.request import urlopen
+from urllib.parse import urlsplit
+from urllib.error import HTTPError
 import os
 from pathlib import Path
 import socket
@@ -16,6 +21,7 @@ import manager
 import extras
 import accounts
 import private_backup
+import profile_links
 import online
 
 subprocess.run(['python3', '/src/tests/bootstrap_smoke.py'], check=True)
@@ -45,6 +51,18 @@ with patch.object(manager, 'run', side_effect=run):
     try:
         with patch.object(manager.getpass, 'getpass', return_value='Test-password-47'):
             manager.create_user('vpntest', 7)
+        manager.create_user('a', 1, secret='1')
+        assert accounts.verify_password('a', '1')
+        short = subprocess.Popen(['sshpass', '-p', '1', 'ssh', '-N', '-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null', '-p', '2222', 'a@127.0.0.1'])
+        processes.append(short)
+        for _ in range(40):
+            time.sleep(0.1)
+            if 'a' in online.collect()['users']['ssh']:
+                break
+        else:
+            raise AssertionError('Single-character account/password login failed')
+        manager.disconnect('a')
+        short.wait(timeout=5)
         # Real password authentication with the configured no-shell account.
         client = subprocess.Popen(['sshpass', '-p', 'Test-password-47', 'ssh', '-N',
                                    '-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null',
@@ -132,21 +150,51 @@ with patch.object(manager, 'run', side_effect=run):
         Path('/dev/net').mkdir(exist_ok=True)
         Path('/dev/net/tun').touch(exist_ok=True)
         manager.setup_openvpn(config)
+        key_files = [Path('/etc/openvpn/server') / name for name in ('vpnmanager-ca.crt', 'vpnmanager-server.crt', 'vpnmanager-server.key', 'vpnmanager-dh.pem', 'vpnmanager-tls.key')]
+        original_keys = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in key_files}
+        manager.setup_openvpn(config)
+        assert {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in key_files} == original_keys
         config['endpoint'] = 'vpn.example.com'
         manager.export_client(config, '/tmp/client.ovpn')
         exported = Path('/tmp/client.ovpn').read_text()
         assert 'PRIVATE KEY' not in exported
         assert '<ca>' in exported and 'auth-user-pass' in exported
+        assert '<tls-auth>' in exported and 'key-direction 1' in exported
         # Ask the installed OpenVPN to parse both generated configurations.
         # This rejects version-incompatible options without needing a TUN device.
         subprocess.run(['openvpn', '--cd', '/etc/openvpn/server', '--config', 'vpnmanager.conf', '--show-ciphers'], check=True, stdout=subprocess.DEVNULL)
         subprocess.run(['openvpn', '--config', '/tmp/client.ovpn', '--show-ciphers'], check=True, stdout=subprocess.DEVNULL)
+        # An actual HTTP download serves a valid client profile, never a private key.
+        config['proxy_backends'] = ['ssh', 'openvpn']
+        config['openvpn_client_transport'] = 'proxy'
+        manager.export_client(config, '/tmp/proxy-client.ovpn')
+        subprocess.run(['openvpn', '--config', '/tmp/proxy-client.ovpn', '--show-ciphers'], check=True, stdout=subprocess.DEVNULL)
+        assert 'http-proxy vpn.example.com 80' in Path('/tmp/proxy-client.ovpn').read_text()
+        url, expires = profile_links.create(manager, config, 60)
+        route = urlsplit(url).path
+        server = online.ThreadingHTTPServer(('127.0.0.1', 0), online.Handler)
+        web = threading.Thread(target=server.serve_forever, daemon=True)
+        web.start()
+        try:
+            with urlopen(f'http://127.0.0.1:{server.server_port}' + route) as response:
+                downloaded = response.read().decode()
+                assert 'PRIVATE KEY' not in downloaded and '<tls-auth>' in downloaded
+                assert 'attachment' in response.headers['Content-Disposition']
+            assert profile_links.read(route, now=expires) is None
+            profile_links.cleanup(force=True)
+        finally:
+            server.shutdown()
+            server.server_close()
+            web.join()
         # Back up / restore only managed users; leave administrator shadow untouched.
         root_before = manager.capture('getent', 'shadow', 'root')
         snapshot = private_backup.create(manager)
         accounts.update('vpntest', limit=77)
+        for path in key_files:
+            manager.write(path, 'replacement to simulate a different server state')
         private_backup.restore(manager, snapshot)
         assert accounts.load()['vpntest']['limit'] == 1
+        assert {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in key_files} == original_keys
         assert manager.capture('getent', 'shadow', 'root') == root_before
         # PAM account expiry is enforced and the periodic job terminates sessions.
         subprocess.run(['chage', '-E', '2000-01-01', 'vpntest'], check=True)

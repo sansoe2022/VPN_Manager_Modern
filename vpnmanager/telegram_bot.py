@@ -159,9 +159,7 @@ class Bot:
             accounts.remove(username)
         elif command == '/password' and len(parts) == 3:
             secret = parts[2]
-            if len(secret) < 10 or any(char in secret for char in ':\r\n'):
-                raise ValueError('Use a password of at least 10 characters without colons or newlines.')
-            self.m.run('chpasswd', input=f'{username}:{secret}\n')
+            self.m.set_password(username, secret)
         elif command == '/renew' and len(parts) == 3:
             self.m.expiry(username, int(parts[2]))
             self.m.run('usermod', '-U', username)

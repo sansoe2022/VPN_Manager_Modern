@@ -3,6 +3,7 @@ import asyncio
 import base64
 import hashlib
 import struct
+import re
 
 MAX_FRAME = 1024 * 1024
 
@@ -64,6 +65,33 @@ async def tcp_to_ws(reader, writer):
         await writer.drain()
 
 
+def routes(ssh_port, openvpn_port, enabled):
+    result = {}
+    if 'ssh' in enabled:
+        result.update({'/': ssh_port, '/ssh': ssh_port})
+    if 'openvpn' in enabled:
+        result.update({'/openvpn': openvpn_port, '/ovpn': openvpn_port})
+        result.setdefault('/', openvpn_port)
+    return result
+
+
+def select_backend(method, path, headers, backends):
+    path = path.split('?', 1)[0]
+    target = headers.get('x-real-host') if path == '/' else None
+    if method == 'CONNECT' and not path.startswith('/'):
+        target = path
+    if target is not None:
+        match = re.fullmatch(r'(?:127\.0\.0\.1|localhost|\[::1\]):(\d{1,5})', target.strip())
+        if not match:
+            return None
+        number = int(match[1])
+        for route, legacy_port in (('/ssh', 22), ('/openvpn', 1194)):
+            if route in backends and number in (legacy_port, backends[route]):
+                return backends[route]
+        return None
+    return backends.get(path)
+
+
 async def handle(reader, writer, backends):
     target = None
     tasks = []
@@ -78,9 +106,8 @@ async def handle(reader, writer, backends):
             if line:
                 key, value = line.split(':', 1)
                 headers[key.lower()] = value.strip()
-        # The old / path defaults to SSH. User-controlled destination headers
-        # cannot select arbitrary internal or Internet services.
-        backend = backends.get(path.split('?', 1)[0])
+        # Legacy destination headers are limited to configured SSH/OpenVPN backends.
+        backend = select_backend(method, path, headers, backends)
         if method not in ('GET', 'CONNECT') or not version.startswith('HTTP/1.') or backend is None:
             writer.write(b'HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n')
             await writer.drain()
@@ -92,7 +119,12 @@ async def handle(reader, writer, backends):
                     or headers.get('upgrade', '').lower() != 'websocket'
                     or 'upgrade' not in headers.get('connection', '').lower()):
                 raise ValueError('Invalid WebSocket handshake')
-        upstream, target = await asyncio.wait_for(asyncio.open_connection('127.0.0.1', backend), 10)
+        try:
+            upstream, target = await asyncio.wait_for(asyncio.open_connection('127.0.0.1', backend), 10)
+        except (OSError, asyncio.TimeoutError):
+            writer.write(b'HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n')
+            await writer.drain()
+            return
         if key:
             accept = base64.b64encode(hashlib.sha1((key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').encode()).digest())
             writer.write(b'HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ' + accept + b'\r\n\r\n')
@@ -124,8 +156,9 @@ async def handle(reader, writer, backends):
                     pass
 
 
-async def serve(host, port, ssh_port, openvpn_port):
+async def serve(host, port, ssh_port, openvpn_port, enabled=('ssh', 'openvpn')):
     active = 0
+    backends = routes(ssh_port, openvpn_port, enabled)
 
     async def limited(reader, writer):
         nonlocal active
@@ -134,7 +167,7 @@ async def serve(host, port, ssh_port, openvpn_port):
             return
         active += 1
         try:
-            await handle(reader, writer, {'/': ssh_port, '/ssh': ssh_port, '/openvpn': openvpn_port})
+            await handle(reader, writer, backends)
         finally:
             active -= 1
 

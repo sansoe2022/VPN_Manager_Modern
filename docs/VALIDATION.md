@@ -2,7 +2,7 @@
 
 Date: 2026-10-27. Architecture: amd64. Disposable distro containers.
 
-The original-numbered English menu is covered by 22 unit checks, including the
+The original-numbered English menu is covered by 35 unit checks, including the
 specific **10 → 00 → main menu**, **22 → More → 35 → main menu** paths. The removed
 V2Ray slot is rejected without closing the program. All main-page/More-page numbers
 are retained, and every connection entry except 08 keeps its original number.
@@ -37,3 +37,11 @@ systemd PID 1 or a routed TUN device. Full installation/reboot, routed OpenVPN e
 real Telegram tokens/chats, speed-test providers, swap/kernel firewall capabilities,
 ARM64 and individual ISP reachability require a real VPS/client acceptance run.
 See [ACCEPTANCE.md](ACCEPTANCE.md). Future OS releases require their own check run.
+
+
+2026-10-28 changes: original shared bundle identity across server directories,
+profile GET/HEAD download headers, expiry/revocation, token log redaction, private-key
+exclusion, automatic SSH/OpenVPN proxy provisioning, legacy local-target routing,
+listening-port banner parsing and visible password prompt order, single-character credentials and fresh feature pages are covered. The
+distro integration also checks stable shared key hashes across repeated setup and
+backup restore, plus actual client-profile HTTP download and proxy-profile parsing.

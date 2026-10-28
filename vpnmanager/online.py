@@ -2,6 +2,7 @@
 import csv
 import base64
 import accounts
+import profile_links
 import dropbear_state
 import grp
 import pwd
@@ -11,6 +12,19 @@ import subprocess
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+CONFIG_PATH = Path('/etc/vpnmanager/config.json')
+
+
+def app_limit():
+    try:
+        value = json.loads(CONFIG_PATH.read_text()).get('online_app_limit', 2500)
+    except FileNotFoundError:
+        value = 2500
+    if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 2147483647:
+        raise ValueError('Invalid Online App limit')
+    return value
+
 
 STATUS_PATHS = (
     '/run/openvpn-server/vpnmanager.status',
@@ -70,6 +84,9 @@ def collect():
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split('?', 1)[0]
+        if path.startswith('/profiles/'):
+            self.download_profile(path)
+            return
         if path == '/checkuser':
             self.check_user()
             return
@@ -82,7 +99,7 @@ class Handler(BaseHTTPRequestHandler):
                 body = b'{"status":"ok"}'
             elif path.endswith('online_app'):
                 # Preserve the legacy app's field names and string values.
-                body = json.dumps({'onlines': str(data['total']), 'limite': '2500'}).encode()
+                body = json.dumps({'onlines': str(data['total']), 'limite': str(app_limit())}).encode()
             else:
                 body = str(data['total']).encode()
             self.send_response(200)
@@ -91,12 +108,42 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header('Cache-Control', 'no-store')
             self.end_headers()
             self.wfile.write(body)
-        except (OSError, subprocess.SubprocessError):
+        except (OSError, ValueError, subprocess.SubprocessError):
             self.send_error(503, 'Session data is unavailable')
+
+    def log_request(self, code='-', size='-'):
+        if getattr(self, 'path', '').startswith('/profiles/'):
+            # Do not put bearer download tokens in the journal/access log.
+            self.log_message('"%s /profiles/[redacted] %s" %s %s', self.command, self.request_version, str(code), str(size))
+        else:
+            super().log_request(code, size)
+
+    def do_HEAD(self):
+        path = self.path.split('?', 1)[0]
+        if path.startswith('/profiles/'):
+            self.download_profile(path, head=True)
+        else:
+            self.send_error(405, 'Use GET for this endpoint')
+
+    def download_profile(self, path, head=False):
+        body = profile_links.read(path)
+        if body is None:
+            self.send_error(404, 'Download link is invalid or expired')
+            return
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/x-openvpn-profile')
+        self.send_header('Content-Disposition', 'attachment; filename="client.ovpn"')
+        self.send_header('Content-Length', str(len(body)))
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header('Referrer-Policy', 'no-referrer')
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.end_headers()
+        if not head:
+            self.wfile.write(body)
 
     def check_user(self):
         try:
-            config = json.loads(Path('/etc/vpnmanager/config.json').read_text())
+            config = json.loads(CONFIG_PATH.read_text())
             if not config.get('checkuser'):
                 self.send_error(404, 'Unknown endpoint')
                 return

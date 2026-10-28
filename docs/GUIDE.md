@@ -165,7 +165,7 @@ certificate chain and key, mode 600, then restart `vpnmanager-tls` for normal pu
 
 OpenVPN automatically handles Ubuntu 20.04's 2.4 key-generation/cipher options and
 newer versions. Profiles use managed username/password authentication and contain
-only the CA and shared tls-crypt key, never the server private key. Keep profiles private.
+only the CA and shared tls-auth key, never the server private key. Keep profiles private.
 VPN routing/NAT is IPv4; configure client IPv6 containment separately if needed.
 
 Online API (normally TCP 81):
@@ -203,3 +203,33 @@ A/AAAA records, certificate verification, provider/host firewalls, allowed Squid
 ranges and listener ports. The default public listeners are IPv4; do not advertise an
 AAAA record without an IPv6 listener. No menu/payload can guarantee every ISP permits
 an IP address or protocol. Use **21** for diagnostics and `journalctl` for service logs.
+
+
+## OpenVPN keys, downloads and proxy mode
+
+The default `openvpn_key_source` is `shared`: the exact original key bundle is used
+on every VPS and is not regenerated. It uses tls-auth, SHA256 and AES-GCM/CBC
+compatibility. Certificates expire in May 2036. This private key is intentionally
+public/shared, as requested, so it does not provide server-unique secrecy. To retain
+server-unique mode instead, explicitly set `openvpn_key_source` to `unique` before
+configuring OpenVPN. Switching key/auth modes requires re-exporting client profiles.
+
+10 → 04 → 04 offers local file or download link and direct TCP or HTTP proxy mode.
+Links use the existing web service (normally TCP 81), random tokens and a 1-1440
+minute expiry (default 60). They serve only client profiles, with no server private
+key or stored user passwords. Open the download port in the host/provider firewall.
+10 → 04 → 06 revokes links. An HTTPS reverse proxy can be used by setting
+`download_base_url` to its public URL in the private config.
+
+10 → 05 selects SSH, OpenVPN or both (default both). Missing SSH is created on
+loopback TCP 2222 without modifying administrator SSH; OpenVPN is configured as TCP.
+Use `/ssh`, `/openvpn`, or a local HTTP CONNECT target. Legacy `X-Real-Host` headers
+are limited to the enabled local SSH/OpenVPN ports. The exported HTTP proxy profile
+uses standard CONNECT to the OpenVPN backend, so a raw WebSocket adapter is unnecessary.
+
+The original shared keys stay the same on a new VPS. Accounts/configuration still
+need migration via menu 15. Update the public endpoint under 10 → 04 → 05 when its
+IP/domain changes; old profiles with an old IP must be edited or exported again.
+
+Online App menu 19 → 04 updates `limite` immediately without a restart. It is the
+app's advertised capacity, separate from the per-user limiter in 06/17.

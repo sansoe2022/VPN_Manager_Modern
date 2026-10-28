@@ -20,6 +20,8 @@ import accounts
 import time
 import signal
 import dropbear_state
+import profile_links
+import shared_keys
 
 from online import collect, serve as online_serve
 from tunnel import serve as tunnel_serve
@@ -28,8 +30,8 @@ CONFIG = Path('/etc/vpnmanager/config.json')
 STATE = Path('/var/lib/vpnmanager')
 GROUP = 'vpnmanager'
 DEFAULTS = {'host': '0.0.0.0', 'ssh_port': 22, 'tunnel_port': 80, 'tls_port': 443,
-            'online_port': 81, 'squid_port': 3128, 'openvpn_port': 1194,
-            'endpoint': '', 'squid_networks': ['127.0.0.1/32'], 'enabled': []}
+            'online_port': 81, 'online_app_limit': 2500, 'squid_port': 3128, 'openvpn_port': 1194,
+            'endpoint': '', 'openvpn_key_source': 'shared', 'squid_networks': ['127.0.0.1/32'], 'enabled': []}
 SERVICES = {'tunnel': 'vpnmanager-tunnel', 'tls': 'vpnmanager-tls',
             'online': 'vpnmanager-online', 'squid': 'squid',
             'openvpn': 'openvpn-server@vpnmanager', 'dropbear': 'vpnmanager-dropbear',
@@ -148,13 +150,24 @@ def managed(username):
         raise ValueError('This account is not managed by VPN Manager.')
 
 
+def validate_password(value):
+    if not value or any(char in value for char in ':\r\n\0'):
+        raise ValueError('Use at least 1 character, without colons, NUL or newlines.')
+    return value
+
+
+def set_password(username, value):
+    valid_user(username)
+    validate_password(value)
+    # Apply the requested policy only to this account, not the host PAM policy.
+    run('chpasswd', '-c', 'SHA512', input=f'{username}:{value}\n')
+
+
 def password(username):
-    first = getpass.getpass('New password: ')
-    if len(first) < 10 or ':' in first or '\n' in first or '\r' in first:
-        raise ValueError('Use at least 10 characters, without colons or newlines.')
+    first = validate_password(getpass.getpass('New password: '))
     if first != getpass.getpass('Repeat password: '):
         raise ValueError('Passwords do not match.')
-    run('chpasswd', input=f'{username}:{first}\n')
+    set_password(username, first)
 
 
 def expiry(username, days):
@@ -180,9 +193,7 @@ def create_user(username, days, secret=None, limit=1):
         if secret is None:
             password(username)
         else:
-            if len(secret) < 10 or any(char in secret for char in ':\r\n'):
-                raise ValueError('Use a password of at least 10 characters without colons or newlines.')
-            run('chpasswd', input=f'{username}:{secret}\n')
+            set_password(username, secret)
         expiry(username, days)
         accounts.update(username, limit=limit)
     except BaseException:
@@ -222,6 +233,7 @@ def expire_portable():
             if not fields[1].startswith(('!', '*')):
                 run('usermod', '-L', username)
             disconnect(username)
+    profile_links.cleanup()
 
 
 def enforce_limits():
@@ -369,8 +381,13 @@ accept = {config['host']}:{number}
 connect = 127.0.0.1:{config[backend + '_port']}
 ''')
     elif name == 'tunnel':
-        if not Path('/etc/vpnmanager/sshd_config').exists():
-            raise ValueError('Configure the dedicated SSH backend first.')
+        enabled = config.get('proxy_backends', ['ssh', 'openvpn'])
+        if not enabled or set(enabled) - {'ssh', 'openvpn'}:
+            raise ValueError('Select SSH, OpenVPN or both proxy backends.')
+        if 'ssh' in enabled and not Path('/etc/vpnmanager/sshd_config').exists():
+            raise ValueError('Configure the SSH proxy backend first.')
+        if 'openvpn' in enabled and not Path('/etc/openvpn/server/vpnmanager.conf').exists():
+            raise ValueError('Configure the OpenVPN proxy backend first.')
     elif name == 'openvpn':
         setup_openvpn(config)
     save(config)
@@ -379,6 +396,24 @@ connect = 127.0.0.1:{config[backend + '_port']}
         configure('squid', config, config['squid_port'])
     if name == 'tunnel' and 'tls' in config['enabled']:
         configure('tls', config, config['tls_port'])
+
+
+def configure_proxy(config, number, backends):
+    number = port(number)
+    if not backends or set(backends) - {'ssh', 'openvpn'}:
+        raise ValueError('Select SSH, OpenVPN or both proxy backends.')
+    if 'tunnel' not in config['enabled'] or config['tunnel_port'] != number:
+        free_port(number)
+    if 'ssh' in backends:
+        if not Path('/etc/vpnmanager/sshd_config').exists():
+            configure_ssh(config, 2222, '127.0.0.1')
+        run('systemctl', 'enable', '--now', 'vpnmanager-sshd')
+    if 'openvpn' in backends:
+        configure('openvpn', config, config['openvpn_port'])
+    config['proxy_backends'] = list(backends)
+    configure('tunnel', config, number)
+    print('Proxy backends: ' + ', '.join(backends))
+    print('Use /ssh for SSH and /openvpn for OpenVPN, or an allowed local CONNECT target.')
 
 
 def openvpn_version():
@@ -393,7 +428,11 @@ def openvpn_version():
     return version
 
 
-def openvpn_ciphers(version):
+def openvpn_ciphers(version, shared=False):
+    if shared:
+        prefix = 'ncp-ciphers' if version < (2, 5) else 'data-ciphers'
+        fallback = 'cipher AES-256-CBC' if version < (2, 5) else 'data-ciphers-fallback AES-256-CBC'
+        return prefix + ' AES-256-GCM:AES-128-GCM:AES-256-CBC\n' + fallback
     # Ubuntu 20.04 ships OpenVPN 2.4, before data-ciphers was introduced.
     if version < (2, 5):
         return 'ncp-ciphers AES-256-GCM:AES-128-GCM'
@@ -406,27 +445,34 @@ def setup_openvpn(config):
     version = openvpn_version()
     directory = Path('/etc/openvpn/server')
     directory.mkdir(parents=True, exist_ok=True)
-    pki = Path('/etc/vpnmanager/pki')
-    env = {**os.environ, 'EASYRSA_PKI': str(pki), 'EASYRSA_BATCH': '1',
-           'EASYRSA_REQ_CN': 'VPN-Manager-CA', 'EASYRSA_ALGO': 'ec', 'EASYRSA_CURVE': 'prime256v1'}
-    if not (pki / 'ca.crt').exists():
-        run('/usr/share/easy-rsa/easyrsa', 'init-pki', env=env)
-        run('/usr/share/easy-rsa/easyrsa', 'build-ca', 'nopass', env=env)
-    if not (pki / 'issued/server.crt').exists():
-        run('/usr/share/easy-rsa/easyrsa', 'build-server-full', 'server', 'nopass',
-            env={key: value for key, value in env.items() if key != 'EASYRSA_REQ_CN'})
-    for source, destination in ((pki / 'ca.crt', directory / 'vpnmanager-ca.crt'),
-                                (pki / 'issued/server.crt', directory / 'vpnmanager-server.crt'),
-                                (pki / 'private/server.key', directory / 'vpnmanager-server.key')):
-        shutil.copy2(source, destination)
-        destination.chmod(0o600)
-    key = directory / 'vpnmanager-tls.key'
-    if not key.exists():
-        if version < (2, 5):
-            run('openvpn', '--genkey', '--secret', str(key))
-        else:
-            run('openvpn', '--genkey', 'secret', str(key))
-        key.chmod(0o600)
+    mode = config.get('openvpn_key_source', 'shared')
+    if mode not in ('shared', 'unique'):
+        raise ValueError('OpenVPN key source must be shared or unique.')
+    shared = mode == 'shared'
+    if shared:
+        shared_keys.install(sys.modules[__name__], directory)
+    else:
+        pki = Path('/etc/vpnmanager/pki')
+        env = {**os.environ, 'EASYRSA_PKI': str(pki), 'EASYRSA_BATCH': '1',
+               'EASYRSA_REQ_CN': 'VPN-Manager-CA', 'EASYRSA_ALGO': 'ec', 'EASYRSA_CURVE': 'prime256v1'}
+        if not (pki / 'ca.crt').exists():
+            run('/usr/share/easy-rsa/easyrsa', 'init-pki', env=env)
+            run('/usr/share/easy-rsa/easyrsa', 'build-ca', 'nopass', env=env)
+        if not (pki / 'issued/server.crt').exists():
+            run('/usr/share/easy-rsa/easyrsa', 'build-server-full', 'server', 'nopass',
+                env={key: value for key, value in env.items() if key != 'EASYRSA_REQ_CN'})
+        for source, destination in ((pki / 'ca.crt', directory / 'vpnmanager-ca.crt'),
+                                    (pki / 'issued/server.crt', directory / 'vpnmanager-server.crt'),
+                                    (pki / 'private/server.key', directory / 'vpnmanager-server.key')):
+            shutil.copy2(source, destination)
+            destination.chmod(0o600)
+        key = directory / 'vpnmanager-tls.key'
+        if not key.exists():
+            if version < (2, 5):
+                run('openvpn', '--genkey', '--secret', str(key))
+            else:
+                run('openvpn', '--genkey', 'secret', str(key))
+            key.chmod(0o600)
     plugins = list(Path('/usr/lib').glob('**/openvpn-plugin-auth-pam.so'))
     if not plugins:
         raise ValueError('Distribution OpenVPN PAM plugin was not found.')
@@ -442,10 +488,11 @@ server 10.80.0.0 255.255.255.0
 ca vpnmanager-ca.crt
 cert vpnmanager-server.crt
 key vpnmanager-server.key
-dh none
-tls-crypt vpnmanager-tls.key
+{'dh vpnmanager-dh.pem' if shared else 'dh none'}
+{'tls-auth vpnmanager-tls.key 0' if shared else 'tls-crypt vpnmanager-tls.key'}
+auth SHA256
 tls-version-min 1.2
-{openvpn_ciphers(version)}
+{openvpn_ciphers(version, shared)}
 verify-client-cert none
 username-as-common-name
 duplicate-cn
@@ -509,11 +556,27 @@ def export_client(config, output):
     directory = Path('/etc/openvpn/server')
     ca = (directory / 'vpnmanager-ca.crt').read_text()
     key = (directory / 'vpnmanager-tls.key').read_text()
+    if ('BEGIN CERTIFICATE' not in ca or 'BEGIN OpenVPN Static key V1' not in key
+            or 'PRIVATE KEY' in ca or 'PRIVATE KEY' in key):
+        raise ValueError('The client CA/TLS authentication files are invalid or contain an unexpected private key.')
+    server_config = (directory / 'vpnmanager.conf').read_text()
+    shared = any(row.startswith('tls-auth ') for row in server_config.splitlines())
+    transport = config.get('openvpn_client_transport', 'direct')
+    if transport not in ('direct', 'proxy'):
+        raise ValueError('Choose a direct or HTTP proxy client transport.')
+    if transport == 'proxy' and 'openvpn' not in config.get('proxy_backends', []):
+        raise ValueError('Enable the OpenVPN proxy backend in menu 10 -> 05 first.')
+    remote = '127.0.0.1' if transport == 'proxy' else host
+    proxy = f'http-proxy {host} {config["tunnel_port"]}\nhttp-proxy-option VERSION 1.1\n' if transport == 'proxy' else ''
+    cipher_list = 'AES-256-GCM:AES-128-GCM' + (':AES-256-CBC' if shared else '')
+    fallback = 'data-ciphers-fallback AES-256-CBC\ncipher AES-256-CBC\n' if shared else ''
+    key_tag = 'tls-auth' if shared else 'tls-crypt'
+    direction = 'key-direction 1\n' if shared else ''
     write(output, f'''client
 dev tun
 proto tcp-client
-remote {host} {config['openvpn_port']}
-resolv-retry infinite
+remote {remote} {config['openvpn_port']}
+{proxy}resolv-retry infinite
 nobind
 persist-key
 persist-tun
@@ -522,14 +585,15 @@ verify-x509-name server name
 auth-user-pass
 auth-nocache
 tls-version-min 1.2
-ignore-unknown-option data-ciphers ncp-ciphers
-data-ciphers AES-256-GCM:AES-128-GCM
-ncp-ciphers AES-256-GCM:AES-128-GCM
-verb 3
+ignore-unknown-option data-ciphers ncp-ciphers data-ciphers-fallback
+data-ciphers {cipher_list}
+ncp-ciphers {cipher_list}
+{fallback}auth SHA256
+{direction}verb 3
 <ca>
 {ca}</ca>
-<tls-crypt>
-{key}</tls-crypt>
+<{key_tag}>
+{key}</{key_tag}>
 ''')
     print(f'Client profile written to {output}. It uses managed account credentials.')
 
@@ -549,14 +613,25 @@ def diagnostics(config):
     print('Account counts are sessions, not unique people; SSH and OpenVPN may count the same person twice.')
 
 
+def clear_terminal():
+    if sys.stdout.isatty():
+        print('\033[2J\033[H', end='', flush=True)
+
+
 def choose(title, options):
     while True:
+        clear_terminal()
         print('\n' + title)
+        print('=' * 47)
         for key, label, _ in options:
             print(f'  {key}. {label}')
         selected = input('Select an option: ').strip().lstrip('0') or '0'
-        for key, _, action in options:
+        for key, label, action in options:
             if selected == key:
+                clear_terminal()
+                if action is not None:
+                    print(title + ' - ' + label)
+                    print('=' * 47)
                 return action
         print('Invalid option. Choose one of the listed numbers.')
 
@@ -599,7 +674,7 @@ def main():
     elif args.command == 'serve-online':
         online_serve(config['host'], config['online_port'])
     elif args.command == 'serve-tunnel':
-        asyncio.run(tunnel_serve(config['host'], config['tunnel_port'], config['ssh_port'], config['openvpn_port']))
+        asyncio.run(tunnel_serve(config['host'], config['tunnel_port'], config['ssh_port'], config['openvpn_port'], config.get('proxy_backends', ['ssh', 'openvpn'])))
     elif args.command == 'online':
         print(json.dumps(collect(), indent=2))
     else:

@@ -42,6 +42,16 @@ class Navigation(unittest.TestCase):
         self.assertEqual(output.getvalue().count('[01] CREATE USER'), 3)
         self.assertIn('[00] BACK TO MAIN MENU', output.getvalue())
 
+    def test_selecting_a_feature_clears_the_screen_before_its_page(self):
+        ui = classic.Classic(manager)
+        order = []
+        with patch.object(ui, 'clear', side_effect=lambda: order.append('clear')), \
+             patch.object(ui, 'report', side_effect=lambda: order.append('report')), \
+             contextlib.redirect_stdout(io.StringIO()) as output:
+            ui.feature('09')
+        self.assertEqual(order, ['clear', 'report'])
+        self.assertIn('USER REPORT', output.getvalue())
+
     def test_invalid_connection_selection_never_exits(self):
         ui = classic.Classic(manager)
         with patch.object(ui, 'header'), patch('builtins.input', side_effect=['08', 'bad', '00']), \
@@ -49,14 +59,26 @@ class Navigation(unittest.TestCase):
             ui.connections()
         self.assertEqual(output.getvalue().count('Invalid option.'), 2)
 
-    def test_trial_sets_minute_expiry_and_sufficient_pam_days(self):
-        core = SimpleNamespace(create_user=Mock())
+    def test_create_prompts_visible_password_immediately_after_username(self):
+        core = SimpleNamespace(create_user=Mock(), validate_password=manager.validate_password)
         ui = classic.Classic(core)
-        with patch('builtins.input', side_effect=['trialuser', '2', '2880']), \
+        with patch('builtins.input', side_effect=['alice', 'Visible-password-47', '30', '2']) as prompt, \
+             contextlib.redirect_stdout(io.StringIO()):
+            ui.create()
+        self.assertEqual(prompt.call_args_list[0].args, ('Username: ',))
+        self.assertEqual(prompt.call_args_list[1].args, ('Password (visible): ',))
+        self.assertIn('Validity', prompt.call_args_list[2].args[0])
+        self.assertIn('connection limit', prompt.call_args_list[3].args[0])
+        core.create_user.assert_called_once_with('alice', 30, secret='Visible-password-47', limit=2)
+
+    def test_trial_sets_minute_expiry_and_sufficient_pam_days(self):
+        core = SimpleNamespace(create_user=Mock(), validate_password=manager.validate_password)
+        ui = classic.Classic(core)
+        with patch('builtins.input', side_effect=['trialuser', 'Visible-password-47', '2880', '2']), \
              patch.object(accounts, 'update') as update, patch.object(classic.time, 'time', return_value=1000), \
              contextlib.redirect_stdout(io.StringIO()):
             ui.create(True)
-        core.create_user.assert_called_once_with('trialuser', 4, limit=2)
+        core.create_user.assert_called_once_with('trialuser', 4, secret='Visible-password-47', limit=2)
         update.assert_called_once_with('trialuser', expires_at=173800, trial=True)
 
 
