@@ -23,7 +23,7 @@ BINARY = Path('/usr/local/lib/vpnmanager/bin/hysteria')
 CONFIG = Path('/etc/vpnmanager/udp.json')
 STATE = Path('/run/vpnmanager/udp-sessions.json')
 CORE_VERSION = 'v1.3.5-modern.1'
-CORE_URL = 'https://github.com/sansoe2022/VPN_Manager_Modern/releases/download/udp-core-' + CORE_VERSION
+CORE_URL = 'https://raw.githubusercontent.com/sansoe2022/VPN_Manager_Modern/66c9dc51f97b00e8d7aa8d3283adeef0b6a6c9c1'
 HASHES = {'amd64': '7ee32d3babee7465e4afba766216abbd199cf33cf2356e95eaa3006379810d11',
           'arm64': 'b1d2e2462fd8b97c8768a379305bb9b0517bf2780ad7f17733763212bcecb448'}
 

@@ -29,3 +29,10 @@ uses module go.sum verification and applies this readable patch. Runtime downloa
 verify architecture-specific SHA-256 checksums in vpnmanager/udp_runtime.py and
 replace the executable atomically before restarting it. User/CA/private keys stay
 in their existing files. ARM64 is cross-compiled; native runtime checks use amd64.
+
+
+The verified runtime assets are hosted in the separate `udp-core-assets-v1.3.5-modern.1`
+branch, pinned by immutable asset commit `66c9dc51f97b00e8d7aa8d3283adeef0b6a6c9c1`.
+The installer clones the main branch shallowly and downloads only its CPU architecture.
+GitHub Release uploads were unavailable for this connection, so runtime URLs use the
+ordinary raw repository endpoint with the same SHA-256 verification.
