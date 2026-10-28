@@ -48,6 +48,17 @@ def listening_ports(output):
     return ports
 
 
+def connection_ports(config, output):
+    """Intersect real listeners with ports configured in Connection Mode."""
+    allowed = {int(config[name + '_port']) for name in
+               ('squid', 'dropbear', 'openvpn', 'tunnel', 'tls', 'sslh')
+               if name in config.get('enabled', []) and config.get(name + '_port')}
+    if config.get('ssh_bind') and config['ssh_bind'] not in ('127.0.0.1', '::1'):
+        allowed.add(int(config['ssh_port']))
+    listeners = listening_ports(output)
+    return {'tcp': listeners['tcp'] & allowed, 'udp': set()}
+
+
 def table(left, right, color=False):
     def item(entry):
         number, label = entry
@@ -124,7 +135,7 @@ class Classic:
         except (OSError, ValueError, KeyError, subprocess.SubprocessError):
             print('System statistics are temporarily unavailable.')
         try:
-            ports = listening_ports(self.m.capture('ss', '-H', '-lntu'))
+            ports = connection_ports(self.m.load(), self.m.capture('ss', '-H', '-lntu'))
             for protocol in ('tcp', 'udp'):
                 values = ', '.join(map(str, sorted(ports[protocol]))) or '(none)'
                 print(self.paint(textwrap.fill(protocol.upper() + ' ports: ' + values, width=47, subsequent_indent='  '), '36'))
@@ -269,6 +280,12 @@ class Classic:
             self.m.expiry(name, days)
             self.m.run('usermod', '-U', name)
 
+    def public_endpoint(self, config):
+        default = config.get('endpoint') or self.m.detect_public_ip()
+        suffix = f' [{default}]' if default else ''
+        config['endpoint'] = self.m.endpoint(input('Public server IP / domain' + suffix + ': ').strip() or default)
+        self.m.save(config)
+
     def service(self, name):
         config = self.m.load()
         active = name in config['enabled']
@@ -299,8 +316,7 @@ class Classic:
                 self.m.save(config)
             return
         if action == 'endpoint':
-            config['endpoint'] = self.m.endpoint(input('Public server IP / domain: ').strip())
-            self.m.save(config)
+            self.public_endpoint(config)
             print('Endpoint saved. Export a new profile if the address changed.')
             return
         if action == 'revoke':
@@ -313,13 +329,13 @@ class Classic:
             if mode is None:
                 return
             transport = self.m.choose('CLIENT CONNECTION', [('1', 'Direct OpenVPN TCP', 'direct'),
-                ('2', 'OpenVPN through HTTP proxy', 'proxy'), ('0', 'Back', None)])
+                ('2', 'OpenVPN through HTTP proxy', 'proxy'),
+                ('3', 'HTTP Custom / WS payload in app', 'custom-app'), ('0', 'Back', None)])
             if transport is None:
                 return
             config['openvpn_client_transport'] = transport
             if not config['endpoint']:
-                config['endpoint'] = self.m.endpoint(input('Public server IP / domain: ').strip())
-                self.m.save(config)
+                self.public_endpoint(config)
             self.m.save(config)
             server_file = Path('/etc/openvpn/server/vpnmanager.conf')
             shared = config.get('openvpn_key_source', 'shared') == 'shared'
@@ -341,6 +357,8 @@ class Classic:
                 print(f'Allow TCP {config["online_port"]} in host/provider firewalls for this link.')
                 print('Keep this link private. The profile contains a shared TLS authentication key, not the server private key.')
             return
+        if name in ('openvpn', 'tunnel', 'tls') and not config.get('endpoint'):
+            self.public_endpoint(config)
         defaults = {'dropbear': 109, 'sslh': 443, 'badvpn': 7300}
         number = self.m.port(input(f'TCP port [{config.get(name + "_port", defaults.get(name))}]: ') or config.get(name + '_port', defaults.get(name)))
         if name == 'tunnel':
@@ -348,6 +366,14 @@ class Classic:
             backends = {'1': ['ssh'], '2': ['openvpn'], '3': ['ssh', 'openvpn']}.get(selected)
             if backends is None:
                 raise ValueError('Choose SSH, OpenVPN or both.')
+            if len(backends) == 2:
+                default = '2' if config.get('proxy_default_backend') == 'openvpn' else '1'
+                selected = choice(input(f'Default for GET / without X-Real-Host: [1] SSH, [2] OpenVPN [{default}]: ') or default)
+                if selected not in ('1', '2'):
+                    raise ValueError('Choose SSH or OpenVPN.')
+                config['proxy_default_backend'] = 'ssh' if selected == '1' else 'openvpn'
+            else:
+                config['proxy_default_backend'] = backends[0]
             self.m.configure_proxy(config, number, backends)
             return
         if name == 'tls':

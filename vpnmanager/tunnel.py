@@ -4,6 +4,7 @@ import base64
 import hashlib
 import struct
 import re
+from urllib.parse import urlsplit
 
 MAX_FRAME = 1024 * 1024
 
@@ -65,23 +66,28 @@ async def tcp_to_ws(reader, writer):
         await writer.drain()
 
 
-def routes(ssh_port, openvpn_port, enabled):
+def routes(ssh_port, openvpn_port, enabled, default='ssh'):
     result = {}
     if 'ssh' in enabled:
         result.update({'/': ssh_port, '/ssh': ssh_port})
     if 'openvpn' in enabled:
         result.update({'/openvpn': openvpn_port, '/ovpn': openvpn_port})
         result.setdefault('/', openvpn_port)
+    if default == 'openvpn' and '/openvpn' in result:
+        result['/'] = openvpn_port
     return result
 
 
 def select_backend(method, path, headers, backends):
+    # Original SSHPlus clients use absolute URLs and arbitrary payload paths.
+    if path.startswith(('http://', 'https://')):
+        path = urlsplit(path).path or '/'
     path = path.split('?', 1)[0]
-    target = headers.get('x-real-host') if path == '/' else None
-    if method == 'CONNECT' and not path.startswith('/'):
+    target = headers.get('x-real-host')
+    if target is None and method == 'CONNECT' and not path.startswith('/'):
         target = path
     if target is not None:
-        match = re.fullmatch(r'(?:127\.0\.0\.1|localhost|\[::1\]):(\d{1,5})', target.strip())
+        match = re.fullmatch(r'(?:127\.0\.0\.1|0\.0\.0\.0|localhost|\[::1\]):(\d{1,5})', target.strip())
         if not match:
             return None
         number = int(match[1])
@@ -89,7 +95,10 @@ def select_backend(method, path, headers, backends):
             if route in backends and number in (legacy_port, backends[route]):
                 return backends[route]
         return None
-    return backends.get(path)
+    if path in ('/ssh', '/openvpn', '/ovpn'):
+        return backends.get(path)
+    # The original raw proxy ignores the carrier's URL when no local target is given.
+    return backends.get(path, backends.get('/'))
 
 
 async def handle(reader, writer, backends):
@@ -156,9 +165,9 @@ async def handle(reader, writer, backends):
                     pass
 
 
-async def serve(host, port, ssh_port, openvpn_port, enabled=('ssh', 'openvpn')):
+async def serve(host, port, ssh_port, openvpn_port, enabled=('ssh', 'openvpn'), default='ssh'):
     active = 0
-    backends = routes(ssh_port, openvpn_port, enabled)
+    backends = routes(ssh_port, openvpn_port, enabled, default)
 
     async def limited(reader, writer):
         nonlocal active

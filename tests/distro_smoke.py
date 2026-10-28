@@ -166,6 +166,7 @@ with patch.object(manager, 'run', side_effect=run):
         subprocess.run(['openvpn', '--config', '/tmp/client.ovpn', '--show-ciphers'], check=True, stdout=subprocess.DEVNULL)
         # An actual HTTP download serves a valid client profile, never a private key.
         config['proxy_backends'] = ['ssh', 'openvpn']
+        config['enabled'] = sorted(set(config['enabled']) | {'tunnel'})
         config['openvpn_client_transport'] = 'proxy'
         manager.export_client(config, '/tmp/proxy-client.ovpn')
         subprocess.run(['openvpn', '--config', '/tmp/proxy-client.ovpn', '--show-ciphers'], check=True, stdout=subprocess.DEVNULL)

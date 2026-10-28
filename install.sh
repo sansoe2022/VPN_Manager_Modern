@@ -39,5 +39,10 @@ for alias in menu vpnmenu; do
   ln -sfn /usr/local/bin/vpnmanager "/usr/local/bin/$alias"
 done
 vpnmanager initialize
+for service in vpnmanager-tunnel vpnmanager-online; do
+  if systemctl is-active --quiet "$service"; then
+    systemctl restart "$service"
+  fi
+done
 printf '\nInstallation complete. Run: sudo vpnmanager\n'
 printf 'Original SSHPlus numbering is restored. Connection mode: 10; back: 00; more: 22.\n'

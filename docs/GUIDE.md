@@ -157,7 +157,8 @@ are not claimed to be identical. The supported behavior is described above and i
 ## Proxy, TLS and online APIs
 
 The proxy accepts raw HTTP upgrade/CONNECT streams and framed RFC 6455 WebSockets.
-Use `/ssh` (or `/`) for SSH and `/openvpn` for OpenVPN. Backends are fixed local
+Use `/ssh` for SSH and `/openvpn` for OpenVPN. In both-backend mode, the setup prompt
+selects which backend plain `GET /` uses. Backends are fixed local
 services; client destination headers cannot select arbitrary internal services.
 TLS wraps the backend selected in menu 10 → 06. A unique self-signed certificate
 is generated initially. Replace `/etc/vpnmanager/tls.pem` with your domain's verified
@@ -214,7 +215,19 @@ public/shared, as requested, so it does not provide server-unique secrecy. To re
 server-unique mode instead, explicitly set `openvpn_key_source` to `unique` before
 configuring OpenVPN. Switching key/auth modes requires re-exporting client profiles.
 
-10 → 04 → 04 offers local file or download link and direct TCP or HTTP proxy mode.
+10 → 04 → 04 offers local file or download link and direct TCP, HTTP proxy, or
+HTTP Custom / app-payload mode. Choose transport **3** when the app injects the
+WS/HTTP payload: it exports the public proxy port without an `http-proxy` directive.
+Use the proxy port from **10 → 05**, not the Online App port (normally 81).
+For a raw HTTP Custom payload:
+
+```text
+GET /openvpn HTTP/1.1[crlf]Host: [host][crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf][crlf]
+```
+
+The `[crlf]` markers denote CRLF line breaks; use your app's equivalent if different.
+Do not add an extra OpenVPN `http-proxy` handshake when the app already supplies it.
+Transport **2** supplies standard HTTP CONNECT itself and needs no injected payload.
 Links use the existing web service (normally TCP 81), random tokens and a 1-1440
 minute expiry (default 60). They serve only client profiles, with no server private
 key or stored user passwords. Open the download port in the host/provider firewall.
@@ -226,6 +239,19 @@ loopback TCP 2222 without modifying administrator SSH; OpenVPN is configured as 
 Use `/ssh`, `/openvpn`, or a local HTTP CONNECT target. Legacy `X-Real-Host` headers
 are limited to the enabled local SSH/OpenVPN ports. The exported HTTP proxy profile
 uses standard CONNECT to the OpenVPN backend, so a raw WebSocket adapter is unnecessary.
+Original `X-Real-Host: 0.0.0.0:1194` and `127.0.0.1:1194` payloads are accepted on
+arbitrary HTTP paths, including absolute URLs; destinations still map only to the
+configured local backend. Carrier paths without a target use the selected default;
+explicit `/ssh` and `/openvpn` require that backend to be enabled.
+Real framed RFC 6455 WebSockets remain supported.
+
+IP/domain prompts offer the saved endpoint, otherwise the detected public VPS IP;
+press Enter to accept it. If external detection is unavailable, enter it manually.
+The menu banner filters actual listeners to Connection Mode services, excluding
+unrelated/ephemeral ports, the Online App port, and private SSH helper listeners.
+OpenVPN/proxy setup checks that its TCP listener opened before reporting success;
+startup failures include recent service journal messages. Updates restart running
+proxy/online workers to load the new source.
 
 The original shared keys stay the same on a new VPS. Accounts/configuration still
 need migration via menu 15. Update the public endpoint under 10 → 04 → 05 when its

@@ -18,6 +18,8 @@ jobs:
         run: |
           docker build --build-arg DISTRO=${{ matrix.distro }} -f tests/Dockerfile -t vpnmanager-test .
           docker run --rm vpnmanager-test
+      - name: Test real OpenVPN authentication over TCP, HTTP and WebSocket
+        run: docker run --rm --cap-add NET_ADMIN --entrypoint python3 vpnmanager-test tests/openvpn_live.py
 
   badvpn-source:
     runs-on: ubuntu-latest

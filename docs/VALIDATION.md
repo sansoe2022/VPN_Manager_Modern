@@ -1,8 +1,8 @@
 # Validation record
 
-Date: 2026-10-27. Architecture: amd64. Disposable distro containers.
+Date: 2026-10-28. Architecture: amd64. Disposable distro containers.
 
-The original-numbered English menu is covered by 35 unit checks, including the
+The original-numbered English menu is covered by 37 unit checks, including the
 specific **10 → 00 → main menu**, **22 → More → 35 → main menu** paths. The removed
 V2Ray slot is rejected without closing the program. All main-page/More-page numbers
 are retained, and every connection entry except 08 keeps its original number.
@@ -45,3 +45,13 @@ exclusion, automatic SSH/OpenVPN proxy provisioning, legacy local-target routing
 listening-port banner parsing and visible password prompt order, single-character credentials and fresh feature pages are covered. The
 distro integration also checks stable shared key hashes across repeated setup and
 backup restore, plus actual client-profile HTTP download and proxy-profile parsing.
+
+The follow-up proxy checks run `tests/openvpn_live.py` with NET_ADMIN in disposable
+containers: real server/client TLS, PAM username/password authentication and TUN
+initialization over direct TCP, original raw HTTP payload, HTTP CONNECT, framed
+RFC 6455 WebSocket, and the exported native HTTP-proxy profile. This tests actual
+OpenVPN sessions rather than only parser output. All five modes passed on Ubuntu
+20.04/22.04/24.04/26.04 and Debian 12/13. It does not test provider firewalls,
+public IPv4 egress/DNS, HTTP Custom's proprietary app behavior, or ISP filtering.
+Unit checks also cover IP prompt defaults, original 0.0.0.0/X-Real-Host routing on
+custom paths and filtering unrelated listening ports out of the menu banner.

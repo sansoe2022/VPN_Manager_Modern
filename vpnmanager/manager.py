@@ -22,6 +22,8 @@ import signal
 import dropbear_state
 import profile_links
 import shared_keys
+from urllib.request import urlopen
+from urllib.error import URLError
 
 from online import collect, serve as online_serve
 from tunnel import serve as tunnel_serve
@@ -264,11 +266,23 @@ def start(name, config):
     unit = SERVICES[name]
     run('systemctl', 'daemon-reload')
     run('systemctl', 'enable', unit)
-    run('systemctl', 'restart', unit)
-    run('systemctl', 'is-active', '--quiet', unit)
+    try:
+        run('systemctl', 'restart', unit)
+        run('systemctl', 'is-active', '--quiet', unit)
+    except subprocess.CalledProcessError:
+        details = capture('journalctl', '-u', unit, '-n', '15', '--no-pager', '-o', 'cat')
+        raise ValueError(f'{name} failed to start.\n{details}') from None
+    if name in ('openvpn', 'tunnel'):
+        for _ in range(30):
+            if capture('ss', '-H', '-ltn', 'sport', '=', str(config[name + '_port'])):
+                break
+            time.sleep(0.1)
+        else:
+            details = capture('journalctl', '-u', unit, '-n', '15', '--no-pager', '-o', 'cat')
+            raise ValueError(f'{name} did not open TCP {config[name + "_port"]}.\n{details}')
     config['enabled'] = sorted(set(config['enabled']) | {name})
     save(config)
-    print(f'{name} started. Allow its TCP port in your host and provider firewall if needed.')
+    print(f'{name} started on TCP {config[name + "_port"]}. Allow this port in your host/provider firewall.')
 
 
 def configure_ssh(config, number, bind=None):
@@ -414,6 +428,9 @@ def configure_proxy(config, number, backends):
     configure('tunnel', config, number)
     print('Proxy backends: ' + ', '.join(backends))
     print('Use /ssh for SSH and /openvpn for OpenVPN, or an allowed local CONNECT target.')
+    if 'openvpn' in backends:
+        print(f'OpenVPN WS/raw HTTP port: {number} (not the Online App port).')
+        print(r'OpenVPN payload: GET /openvpn HTTP/1.1\r\nHost: [host]\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n')
 
 
 def openvpn_version():
@@ -551,6 +568,26 @@ def endpoint(value):
     return value
 
 
+def detect_public_ip():
+    """Detect the routable address, including VPS instances behind provider NAT."""
+    for url in ('https://api.ipify.org', 'https://ipv4.icanhazip.com'):
+        try:
+            with urlopen(url, timeout=2) as response:
+                value = response.read(128).decode('ascii').strip()
+            if ipaddress.ip_address(value).is_global:
+                return value
+        except (OSError, URLError, ValueError, UnicodeError):
+            continue
+    try:
+        routes = json.loads(capture('ip', '-j', 'route', 'get', '1.1.1.1'))
+        value = routes[0].get('prefsrc', '')
+        if ipaddress.ip_address(value).is_global:
+            return value
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError, KeyError):
+        pass
+    return ''
+
+
 def export_client(config, output):
     host = endpoint(config['endpoint'])
     directory = Path('/etc/openvpn/server')
@@ -562,11 +599,12 @@ def export_client(config, output):
     server_config = (directory / 'vpnmanager.conf').read_text()
     shared = any(row.startswith('tls-auth ') for row in server_config.splitlines())
     transport = config.get('openvpn_client_transport', 'direct')
-    if transport not in ('direct', 'proxy'):
-        raise ValueError('Choose a direct or HTTP proxy client transport.')
-    if transport == 'proxy' and 'openvpn' not in config.get('proxy_backends', []):
+    if transport not in ('direct', 'proxy', 'custom-app'):
+        raise ValueError('Choose direct, HTTP proxy or a custom-app client transport.')
+    if transport in ('proxy', 'custom-app') and ('tunnel' not in config['enabled'] or 'openvpn' not in config.get('proxy_backends', [])):
         raise ValueError('Enable the OpenVPN proxy backend in menu 10 -> 05 first.')
     remote = '127.0.0.1' if transport == 'proxy' else host
+    remote_port = config['tunnel_port'] if transport == 'custom-app' else config['openvpn_port']
     proxy = f'http-proxy {host} {config["tunnel_port"]}\nhttp-proxy-option VERSION 1.1\n' if transport == 'proxy' else ''
     cipher_list = 'AES-256-GCM:AES-128-GCM' + (':AES-256-CBC' if shared else '')
     fallback = 'data-ciphers-fallback AES-256-CBC\ncipher AES-256-CBC\n' if shared else ''
@@ -575,7 +613,7 @@ def export_client(config, output):
     write(output, f'''client
 dev tun
 proto tcp-client
-remote {remote} {config['openvpn_port']}
+remote {remote} {remote_port}
 {proxy}resolv-retry infinite
 nobind
 persist-key
@@ -596,6 +634,9 @@ ncp-ciphers {cipher_list}
 {key}</{key_tag}>
 ''')
     print(f'Client profile written to {output}. It uses managed account credentials.')
+    if transport == 'custom-app':
+        print('In HTTP Custom, enable your WS/HTTP payload and use GET /openvpn HTTP/1.1.')
+        print('This profile has no http-proxy directive; the app supplies the HTTP handshake.')
 
 
 def diagnostics(config):
@@ -674,7 +715,7 @@ def main():
     elif args.command == 'serve-online':
         online_serve(config['host'], config['online_port'])
     elif args.command == 'serve-tunnel':
-        asyncio.run(tunnel_serve(config['host'], config['tunnel_port'], config['ssh_port'], config['openvpn_port'], config.get('proxy_backends', ['ssh', 'openvpn'])))
+        asyncio.run(tunnel_serve(config['host'], config['tunnel_port'], config['ssh_port'], config['openvpn_port'], config.get('proxy_backends', ['ssh', 'openvpn']), config.get('proxy_default_backend', 'ssh')))
     elif args.command == 'online':
         print(json.dumps(collect(), indent=2))
     else:

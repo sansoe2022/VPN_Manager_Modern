@@ -141,6 +141,28 @@ class Profiles(unittest.TestCase):
 
 
 class ProxyAndBanner(unittest.TestCase):
+    def test_endpoint_detection_and_enter_default(self):
+        response = Mock()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.read.return_value = b'8.8.4.4\n'
+        with patch.object(manager, 'urlopen', return_value=response):
+            self.assertEqual(manager.detect_public_ip(), '8.8.4.4')
+        config = {'endpoint': ''}
+        with patch.object(manager, 'detect_public_ip', return_value='8.8.4.4'), \
+             patch.object(manager, 'save'), patch('builtins.input', return_value='') as prompt:
+            classic.Classic(manager).public_endpoint(config)
+        self.assertEqual(config['endpoint'], '8.8.4.4')
+        self.assertIn('[8.8.4.4]', prompt.call_args.args[0])
+
+    def test_banner_excludes_unmanaged_and_ephemeral_ports(self):
+        config = {'enabled': ['tunnel', 'openvpn', 'online'], 'tunnel_port': 80,
+                  'openvpn_port': 1194, 'online_port': 81, 'ssh_port': 2222, 'ssh_bind': '127.0.0.1'}
+        text = '\n'.join(f'tcp LISTEN 0 128 0.0.0.0:{port} 0.0.0.0:*' for port in (22, 80, 81, 1194, 2222, 56001))
+        self.assertEqual(classic.connection_ports(config, text), {'tcp': {80, 1194}, 'udp': set()})
+        config['ssh_bind'] = '0.0.0.0'
+        self.assertEqual(classic.connection_ports(config, text)['tcp'], {80, 1194, 2222})
+
     def test_proxy_setup_provisions_ssh_and_openvpn_instead_of_requiring_ssh_first(self):
         config = {'enabled': [], 'tunnel_port': 80, 'openvpn_port': 1194}
         with patch.object(manager, 'Path') as path, patch.object(manager, 'free_port'), \
@@ -164,6 +186,12 @@ class ProxyAndBanner(unittest.TestCase):
         self.assertEqual(tunnel.select_backend('GET', '/ssh', {}, both), 2222)
         self.assertEqual(tunnel.select_backend('GET', '/openvpn', {}, both), 1194)
         self.assertEqual(tunnel.select_backend('GET', '/', {'x-real-host': '127.0.0.1:1194'}, both), 1194)
+        self.assertEqual(tunnel.select_backend('GET', '/legacy-payload', {'x-real-host': '0.0.0.0:1194'}, both), 1194)
+        self.assertEqual(tunnel.select_backend('CONNECT', 'example.com:443', {'x-real-host': 'localhost:1194'}, both), 1194)
+        self.assertEqual(tunnel.select_backend('GET', 'http://example.com/openvpn', {}, both), 1194)
+        self.assertEqual(tunnel.routes(2222, 1194, ['ssh', 'openvpn'], 'openvpn')['/'], 1194)
+        default_vpn = tunnel.routes(2222, 1194, ['ssh', 'openvpn'], 'openvpn')
+        self.assertEqual(tunnel.select_backend('GET', '/carrier-path', {}, default_vpn), 1194)
         self.assertEqual(tunnel.select_backend('CONNECT', '127.0.0.1:1194', {}, both), 1194)
         self.assertEqual(tunnel.select_backend('CONNECT', '127.0.0.1:22', {}, both), 2222)
         for host in ('127.0.0.1.evil:22', '127.0.0.1:3306', '192.0.2.1:22'):
