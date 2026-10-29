@@ -15,9 +15,7 @@ curl -fsSL https://raw.githubusercontent.com/sansoe2022/VPN_Manager_Modern/main/
 ```
 
 ## After install completed
-```
-menu
-```
+Run: sudo vpnmanager Or menu
 
 ## Features
 
