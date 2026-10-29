@@ -12,7 +12,6 @@ A VPN manager with a readable English menu for SSH, OpenVPN and UDP services.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sansoe2022/VPN_Manager_Modern/main/Plus | sudo bash
-sudo menu
 ```
 
 ## Features
