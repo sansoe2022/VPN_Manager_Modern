@@ -14,6 +14,11 @@ A VPN manager with a readable English menu for SSH, OpenVPN and UDP services.
 curl -fsSL https://raw.githubusercontent.com/sansoe2022/VPN_Manager_Modern/main/Plus | sudo bash
 ```
 
+## After install completed
+```
+menu
+```
+
 ## Features
 
 - SSH, Dropbear, OpenVPN, WebSocket/SSL and Squid proxy.
